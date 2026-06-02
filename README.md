@@ -1,5 +1,7 @@
 # EchoEar（CyberVoc）ESP32-S3 固件
 
+![CyberVoc](/docs/v0/cybervoc_pretty_bg.png)
+
 本仓库是基于开源项目 [`78/xiaozhi-esp32`](https://github.com/78/xiaozhi-esp32) 的工程框架进行裁剪与二次开发的固件工程，**仅保留并维护**我们自己的两款硬件板级实现：
 
 - `main/boards/CyberVoc-Board-V1_2`
