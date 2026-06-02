@@ -1,4 +1,4 @@
-# EchoEar（CyberVoc）ESP32-S3 固件
+# 赛博喵伴（CyberVoc）ESP32-S3 固件
 
 ![CyberVoc](/docs/v0/cybervoc_pretty_bg.png)
 
