@@ -1,0 +1,8 @@
+description: Cyber Base Control Component - UART-based communication for cyber base
+  device control
+license: Apache-2.0
+repository: git://github.com/espressif2022/cybervoc_base_control.git
+repository_info:
+  commit_sha: 99e0954dc2e6450bb9d3b45e0a4cab1816db66fc
+  path: .
+version: 0.0.3~1

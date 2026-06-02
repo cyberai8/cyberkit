@@ -1,0 +1,7 @@
+dependencies:
+  espressif/esp-sr: ~2.2.0
+description: Audio DOA is a library for ESP32 that provides audio direction of arrival
+  functionality.
+license: Apache-2.0
+url: https://github.com/Zhang-HongZe/audio_doa
+version: 1.2.0

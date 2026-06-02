@@ -1,0 +1,19 @@
+tmp/
+# components/
+managed_components/
+components-copy/
+build/
+.vscode/
+.devcontainer/
+sdkconfig.old
+# sdkconfig
+dependencies.lock
+.env
+releases/
+main/assets/lang_config.h
+.DS_Store
+.cache
+*.pyc
+# *.bin
+mmap_generate_*.h
+.clangd

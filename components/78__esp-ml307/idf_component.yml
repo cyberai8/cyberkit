@@ -1,0 +1,14 @@
+dependencies:
+  idf: '>=5.5.2'
+description: ESP32 ML307 / EC801E / NT26K Cat.1 Cellular Module
+files:
+  exclude:
+  - .git
+  - dist
+license: Apache-2.0
+repository: git://github.com/78/esp-ml307.git
+repository_info:
+  commit_sha: ab4de7c28c8b8f809eba2f56f38090d57fce984d
+  path: .
+url: https://github.com/78/esp-ml307
+version: 3.6.5

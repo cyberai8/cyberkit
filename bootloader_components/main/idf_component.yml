@@ -1,0 +1,2 @@
+dependencies:
+  espressif/bootloader_support_plus: ">=0.1.0"

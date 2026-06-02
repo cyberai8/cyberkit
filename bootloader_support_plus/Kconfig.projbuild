@@ -1,0 +1,40 @@
+menu "Bootloader config (Custom)"
+    config BOOTLOADER_COMPRESSED_ENABLED
+        bool "Enable compressed OTA support"
+        default n
+
+    choice BOOTLOADER_CUSTOM_DECOMPRESSOR
+        prompt "Choose decompressor"
+        default BOOTLOADER_DECOMPRESSOR_XZ
+        depends on BOOTLOADER_COMPRESSED_ENABLED
+        help
+            Choose the corresponding decompression method to decompress the compressed OTA binary.
+
+        config BOOTLOADER_DECOMPRESSOR_XZ
+        bool "XZ"
+        help
+            Using XZ decompressor in custom bootloader.
+
+    endchoice
+
+    config BOOTLOADER_CUSTOM_DEBUG_ON
+        bool "Turn on debug log in custom bootloader"
+        default n
+
+    config SKIP_VALIDATE_CUSTOM_COMPRESSED_HEADER
+        bool "Skip compressed header validation after downloading compressed image"
+        default n
+
+    config SKIP_VALIDATE_CUSTOM_COMPRESSED_DATA
+        bool "Skip compressed data validation in custom bootloader"
+        default n
+
+    config ENABLE_LEGACY_ESP_BOOTLOADER_PLUS_V2_SUPPORT
+        bool "Enable legacy esp bootloader plus v2 support"
+        default n
+        depends on IDF_TARGET_ESP32 || IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C3
+        help
+            This option is reserved to support devices already using esp-bootloader-plus scheme.
+            The triggering decompression mechanism in esp-bootloader-plus scheme and bootloader-support-plus scheme is different,
+            so they are not compatible. Please make sure you only enable this option when you need the support of esp-bootloader-plus scheme.
+endmenu

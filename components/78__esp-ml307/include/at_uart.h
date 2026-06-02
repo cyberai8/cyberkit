@@ -1,0 +1,193 @@
+#ifndef _AT_UART_H_
+#define _AT_UART_H_
+
+#include <string>
+#include <vector>
+#include <functional>
+#include <mutex>
+#include <list>
+#include <cstdlib>
+#include <memory>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include <freertos/event_groups.h>
+#include <driver/gpio.h>
+#include <driver/uart.h>
+#include <esp_pm.h>
+#include <esp_log.h>
+#include <esp_sleep.h>
+#include <uart_uhci.h>
+
+// UART Events
+#define AT_EVENT_COMMAND_DONE   BIT1
+#define AT_EVENT_COMMAND_ERROR  BIT2
+#define AT_EVENT_RI_PIN_INT     BIT3  // RI pin interrupt event
+#define AT_EVENT_FIFO_OVERFLOW  BIT4  // DMA buffer overflow event
+#define AT_EVENT_PARSE_NEEDED   BIT5  // Signal EventTask to parse response
+
+// Default Configuration
+#define UART_NUM                UART_NUM_1
+
+// DMA Buffer Configuration, OTA upgrade will use up to 6 Buffers
+#define AT_UART_RX_BUFFER_COUNT 12
+#define AT_UART_RX_BUFFER_SIZE  512
+
+// AT Command Argument Value Structure
+struct AtArgumentValue {
+    enum class Type { String, Int, Double };
+    Type type;
+    std::string string_value;
+    int int_value;
+    double double_value;
+    
+    std::string ToString() const {
+        switch (type) {
+            case Type::String:
+                return "\"" + string_value + "\"";
+            case Type::Int:
+                return std::to_string(int_value);
+            case Type::Double:
+                return std::to_string(double_value);
+            default:
+                return "";
+        }
+    }
+};
+
+// Data Receive Callback Function Type
+typedef std::function<void(const std::string& command, const std::vector<AtArgumentValue>& arguments)> UrcCallback;
+
+class AtUart {
+public:
+    AtUart(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t dtr_pin = GPIO_NUM_NC,
+           gpio_num_t ri_pin = GPIO_NUM_NC, uart_port_t uart_num = UART_NUM);
+    ~AtUart();
+
+    void Initialize();
+    
+    // Baud Rate Management
+    bool SetBaudRate(int new_baud_rate, int timeout_ms = -1);
+    int GetBaudRate() const { return baud_rate_; }
+    
+    // Data Sending
+    bool SendCommand(const std::string& command, size_t timeout_ms = 1000, bool add_crlf = true);
+    bool SendCommandWithData(const std::string& command, size_t timeout_ms = 1000, bool add_crlf = true, const char* data = nullptr, size_t data_length = 0);
+    std::string GetResponse() const;
+    int GetCmeErrorCode() const { return cme_error_code_; }
+    
+    // Callback Management
+    std::list<UrcCallback>::iterator RegisterUrcCallback(UrcCallback callback);
+    void UnregisterUrcCallback(std::list<UrcCallback>::iterator iterator);
+    
+    // Control Interface
+    void SetDtrPin(bool high);
+    bool GetDtrPin() const { return dtr_pin_state_; }
+    bool IsInitialized() const { return initialized_; }
+    void SetDebug(bool enable);
+
+    std::string EncodeHex(const std::string& data);
+    std::string DecodeHex(const std::string& data);
+    void EncodeHexAppend(std::string& dest, const char* data, size_t length);
+    void DecodeHexAppend(std::string& dest, const char* data, size_t length);
+
+private:
+    gpio_num_t tx_pin_;
+    gpio_num_t rx_pin_;
+    gpio_num_t dtr_pin_;
+    gpio_num_t ri_pin_;
+    uart_port_t uart_num_;
+    int baud_rate_;
+    bool initialized_;
+    bool dtr_pin_state_;  // Record the current state of the DTR pin
+    bool debug_ = false;  // Debug mode flag
+    int cme_error_code_ = 0;
+    std::string response_;
+    bool wait_for_response_ = false;
+    std::mutex command_mutex_;
+    mutable std::mutex mutex_;
+    mutable std::mutex urc_mutex_;  // Independent mutex for urc_callbacks_
+    std::mutex dtr_mutex_;
+    esp_pm_lock_handle_t pm_lock_;
+    esp_pm_lock_handle_t ri_pm_lock_;  // RI pin PM lock
+    bool ri_pm_lock_acquired_;  // Track RI PM lock state
+    
+    // DMA controller
+    UartUhci uart_uhci_;
+    
+    // FreeRTOS Objects
+    TaskHandle_t receive_task_handle_ = nullptr;
+    TaskHandle_t event_task_handle_ = nullptr;  // Task for parsing and event handling
+    QueueHandle_t rx_data_queue_;  // Queue for DMA received data
+    EventGroupHandle_t event_group_handle_;
+    
+    std::string rx_buffer_;
+    std::mutex rx_buffer_mutex_;  // Mutex to protect rx_buffer_ access
+    
+    // Callback Functions
+    std::list<UrcCallback> urc_callbacks_;
+    
+    // Internal Methods
+    void ReceiveTask();   // Task for receiving data from DMA queue
+    void EventTask();     // Task for parsing response and handling events
+    bool ParseResponse();
+    bool DetectBaudRate(int timeout_ms = -1);
+    // Handle URC
+    void HandleUrc(const std::string& command, const std::vector<AtArgumentValue>& arguments);
+    bool SendData(const char* data, size_t length);
+    
+    // DMA RX Callback (called from ISR context)
+    static bool IRAM_ATTR DmaRxCallback(const UartUhci::RxEventData& data, void* user_data);
+    
+    // DMA Overflow Callback (called from ISR context when buffer exhaustion detected)
+    static bool IRAM_ATTR DmaOverflowCallback(void* user_data);
+    
+    // RI Pin ISR Handler
+    static void IRAM_ATTR RiPinIsrHandler(void* arg);
+
+    friend class DtrGuard;
+};
+
+/**
+ * RAII guard for modem DTR pin management
+ * Automatically activates modem (DTR=false) on construction
+ * and deactivates modem (DTR=true) on destruction
+ */
+class DtrGuard {
+public:
+    explicit DtrGuard(AtUart* at_uart)
+        : at_uart_(at_uart), active_(false) {
+        if (at_uart_ && at_uart_->GetDtrPin()) {
+            // Lock DTR mutex to ensure exclusive access
+            lock_ = std::unique_lock<std::mutex>(at_uart_->dtr_mutex_);
+            // Acquire PM lock before activating modem
+            esp_pm_lock_acquire(at_uart_->pm_lock_);
+            at_uart_->SetDtrPin(false);
+            active_ = true;
+        }
+    }
+
+    ~DtrGuard() {
+        if (at_uart_ && active_) {
+            at_uart_->SetDtrPin(true);
+            // Release PM lock after deactivating modem
+            esp_pm_lock_release(at_uart_->pm_lock_);
+        }
+        // lock_ will be automatically unlocked when it goes out of scope
+    }
+
+    // Non-copyable
+    DtrGuard(const DtrGuard&) = delete;
+    DtrGuard& operator=(const DtrGuard&) = delete;
+
+    // Non-movable
+    DtrGuard(DtrGuard&&) = delete;
+    DtrGuard& operator=(DtrGuard&&) = delete;
+
+private:
+    AtUart* at_uart_;
+    bool active_;
+    std::unique_lock<std::mutex> lock_;
+};
+
+#endif // _AT_UART_H_

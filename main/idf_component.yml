@@ -1,0 +1,47 @@
+## IDF Component Manager Manifest File1
+dependencies:
+
+  espressif/esp_lcd_st77916: ^1.0.1
+  espressif/esp_io_expander_tca9554: ==2.0.0
+  espressif/esp_lcd_panel_io_additions: ^1.0.1
+  78/esp-wifi-connect: ~2.6.2
+  78/esp-opus-encoder: ~2.4.1
+  # 78/esp-ml307: ~3.5.1
+  78/xiaozhi-fonts: ~1.5.5
+  espressif/led_strip: ~3.0.1
+  espressif/esp_codec_dev: ~1.5
+  espressif/esp-sr: ~2.2.0
+  espressif/button: ~4.1.3
+  espressif/knob: ^1.0.0
+  espressif/esp_video:
+    version: ==1.3.1   # for compatibility. update version may need to modify this project code.
+    rules:
+    - if: target not in [esp32]
+  espressif/esp_image_effects:
+    version: ^1.0.1
+    rules:
+    - if: target not in [esp32]
+  lvgl/lvgl: ~9.3.0
+  espressif/esp_io_expander_tca95xx_16bit: ^2.0.0
+  espressif/esp_lvgl_adapter: ^0.1.0
+  espressif2022/image_player: ^1.1.1
+  espressif2022/esp_emote_gfx: ^2.0.0
+  espressif2022/esp_emote_assets: ^0.0.3
+  # espressif2022/cybervoc_base_control: ^0.0.3
+  espfriends/beat_detection: ^1.0.0
+  espfriends/audio_doa: ^1.2.0
+  espressif/esp_lv_eaf_player: ^0.1.0
+  espressif/touch_slider_sensor: ^0.2.0
+  espressif/touch_button: ^0.1.0
+  espressif/adc_mic: ^0.2.1
+  espressif/esp_mmap_assets: '>=1.2'
+  espressif/esp_new_jpeg: ^0.6.1
+
+  ## Required IDF version
+  idf:
+    version: '>=5.4.0'
+  espressif2022/bmi270: ^1.1.0~2
+  espressif/esp_lcd_touch_cst816s: ^1.0.6
+  chmorgan/esp-libhelix-mp3: ^1.0.3
+  espressif/bootloader_support_plus: =*
+  espressif/cmake_utilities: =*
