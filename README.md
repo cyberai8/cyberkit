@@ -30,6 +30,11 @@
 - **CyberVoc-Board-V1_2**：`main/boards/CyberVoc-Board-V1_2`
 - **CyberVoc-Board-V2_0**：`main/boards/CyberVoc-Board-V2_0`
 
+烧录时可按开关机按键行为区分板级：
+
+- 开机后烧录程序时，不需要一直按住开关机按键即可正常烧录的是 `main/boards/CyberVoc-Board-V1_2`
+- 烧录程序时，需要一直按住开关机按键才能正常烧录的是 `main/boards/CyberVoc-Board-V2_0`
+
 对应的板级配置在各自目录下的 `config.h` / `config.json` 中。
 
 ---
@@ -136,4 +141,3 @@ idf.py flash monitor
 
 - 仅保证 `CyberVoc-Board-V1_2` 与 `CyberVoc-Board-V2_0` 的可用性与回归
 - 变更请尽量保持板级差异收敛在各自 `main/boards/<board>/` 目录内
-
