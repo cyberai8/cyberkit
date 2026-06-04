@@ -239,6 +239,7 @@ void Application::CheckNewVersion(Ota &ota)
         // Activation code is shown to the user and waiting for the user to input
         if (ota.HasActivationCode())
         {
+            #ifdef CONFIG_USE_BLUFI_NET_CONFIGURING
             uint8_t mac[6];
             esp_read_mac(mac, ESP_MAC_WIFI_STA);
             char qr_url[256];
@@ -259,6 +260,7 @@ void Application::CheckNewVersion(Ota &ota)
             
             ESP_LOGI(TAG, "QR Code URL: %s", qr_url);
             display->ShowQRCode(qr_url, nullptr);
+            #endif
             ShowActivationCode(ota.GetActivationCode(), ota.GetActivationMessage());
         }
 
@@ -310,9 +312,11 @@ void Application::ShowActivationCode(const std::string &code, const std::string 
                                                            digit_sound{'8', Lang::Sounds::OGG_8},
                                                            digit_sound{'9', Lang::Sounds::OGG_9}}};
 
+#ifdef CONFIG_USE_BLUFI_NET_CONFIGURING                                                           
     // This sentence uses 9KB of SRAM, so we need to wait for it to finish
     Alert(Lang::Strings::ACTIVATION, message.c_str(), "link", Lang::Sounds::OGG_SCAN_BIND_CYBERPET);
-/*
+#else
+    Alert(Lang::Strings::ACTIVATION, message.c_str(), "link", Lang::Sounds::OGG_ACTIVATION);
     for (const auto &digit : code)
     {
         auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),
@@ -323,7 +327,7 @@ void Application::ShowActivationCode(const std::string &code, const std::string 
             audio_service_.PlaySound(it->sound);
         }
     }
-*/
+#endif
 }
 
 void Application::Alert(const char *status, const char *message, const char *emotion, const std::string_view &sound)
