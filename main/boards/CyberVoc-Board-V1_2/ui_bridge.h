@@ -81,6 +81,21 @@ void ui_bridge_init(void *display);
 void ui_bridge_attach_gesture_handler(lv_indev_t *indev);
 
 /**
+ * @brief Suppress touch/head-triggered actions briefly after a gesture.
+ *
+ * This prevents a swipe release or nearby head-touch event from immediately
+ * starting a voice interaction while the UI/audio state is still settling.
+ *
+ * @param duration_ms Suppression duration in milliseconds
+ */
+void ui_bridge_suppress_interactions(uint32_t duration_ms);
+
+/**
+ * @brief Return whether touch/head-triggered actions should currently be ignored.
+ */
+bool ui_bridge_interactions_suppressed(void);
+
+/**
  * @brief Register a page container for page switching
  *
  * Registers a page container that can be switched to via gesture navigation.

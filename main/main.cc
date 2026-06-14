@@ -4,6 +4,7 @@
 #include <nvs_flash.h>
 #include <driver/gpio.h>
 #include <esp_event.h>
+#include <esp_netif.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -190,7 +191,8 @@ extern "C" void app_main(void)
 #endif
 
     //esp_log_level_set("*", ESP_LOG_NONE);
-    // Initialize the default event loop
+    // Initialize the TCP/IP stack and default event loop before any network user starts.
+    ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     // Initialize NVS flash for WiFi configuration

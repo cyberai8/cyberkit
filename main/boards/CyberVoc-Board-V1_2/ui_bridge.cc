@@ -133,6 +133,8 @@ static ui_bridge_page_node_t *s_page_list = NULL; /* Linked list head */
 static const char *s_current_page = NULL;
 static ui_bridge_page_switch_cb_t s_page_switch_cb = NULL;
 static void *s_page_switch_user_data = NULL;
+static uint32_t s_ignore_click_until_tick = 0;
+static uint32_t s_suppress_interactions_until_tick = 0;
 
 /* Base emote UI container */
 static lv_obj_t *s_base_container = NULL;
@@ -144,6 +146,45 @@ static emote::EmoteDisplay *s_cached_emote_display = nullptr;
 static void ui_bridge_handle_gesture_navigation(ui_bridge_gesture_type_t gesture_type);
 static void ui_bridge_refresh_emote_display(void);
 static bool ui_bridge_check_gesture_start_position(ui_bridge_gesture_type_t gesture, lv_coord_t start_x, lv_coord_t start_y);
+
+static void ui_bridge_ignore_next_click(uint32_t duration_ms)
+{
+    s_ignore_click_until_tick = lv_tick_get() + duration_ms;
+}
+
+static bool ui_bridge_should_ignore_click(void)
+{
+    if (s_ignore_click_until_tick == 0)
+    {
+        return false;
+    }
+    if ((int32_t)(lv_tick_get() - s_ignore_click_until_tick) < 0)
+    {
+        return true;
+    }
+    s_ignore_click_until_tick = 0;
+    return false;
+}
+
+void ui_bridge_suppress_interactions(uint32_t duration_ms)
+{
+    s_suppress_interactions_until_tick = lv_tick_get() + duration_ms;
+    ui_bridge_ignore_next_click(duration_ms);
+}
+
+bool ui_bridge_interactions_suppressed(void)
+{
+    if (s_suppress_interactions_until_tick == 0)
+    {
+        return false;
+    }
+    if ((int32_t)(lv_tick_get() - s_suppress_interactions_until_tick) < 0)
+    {
+        return true;
+    }
+    s_suppress_interactions_until_tick = 0;
+    return false;
+}
 
 /**
  * @brief Check if gesture start position is valid for the given gesture direction
@@ -271,8 +312,8 @@ static void ui_bridge_gesture_event_cb(lv_event_t *e)
                 {
                     ESP_LOGI(TAG, "swipe detected: %d (start: %ld, %ld)", gesture,
                              (long)state->start_x, (long)state->start_y);
-                    // ui_bridge_handle_gesture_navigation(gesture);
-                    state->handled = true;
+                    // Only log during PRESSING. Navigation is handled on RELEASE
+                    // after the final swipe direction is stable.
                 }
                 else
                 {
@@ -353,6 +394,7 @@ static void ui_bridge_gesture_event_cb(lv_event_t *e)
                         ESP_LOGI(TAG, "swipe detected: %d (start: %ld, %ld)", gesture,
                                  (long)state->start_x, (long)state->start_y);
                         ui_bridge_handle_gesture_navigation(gesture);
+                        ui_bridge_ignore_next_click(350);
                         state->handled = true;
                         state->long_press_reported = true;
                     }
@@ -360,7 +402,7 @@ static void ui_bridge_gesture_event_cb(lv_event_t *e)
                     {
                         ESP_LOGI(TAG, "swipe gesture %d rejected: invalid start position (%ld, %ld)",
                                  gesture, (long)state->start_x, (long)state->start_y);
-                        ui_bridge_handle_gesture_navigation(gesture);
+                        ui_bridge_ignore_next_click(350);
                         state->handled = true;
                         state->long_press_reported = true;
                     }
@@ -505,22 +547,19 @@ static void ui_bridge_handle_gesture_navigation(ui_bridge_gesture_type_t gesture
 
     ESP_LOGI(TAG, "SWIPE_%s: %s (%d) -> %s (%d)",
              gesture_name, current_name, current_index, next_name, next_index);
+    ui_bridge_suppress_interactions(1200);
     auto &app = Application::GetInstance();
-    app.SwitchToIdle();
+    app.Schedule([target_page]() {
+        Application::GetInstance().SwitchToIdle();
+
+        if (s_page_switch_cb && s_page_switch_cb(target_page, s_page_switch_user_data))
+        {
+            return;
+        }
+
+        ui_bridge_switch_page(target_page);
+    });
     ESP_LOGI(TAG, "先切换到空闲态,再变化UI");
-
-    /* Call custom callback if set */
-    if (s_page_switch_cb && s_page_switch_cb(target_page, s_page_switch_user_data))
-    {
-        return;
-    }
-
-    // if (app.GetDeviceState() == kDeviceStateSpeaking && app.GetDeviceState() == kDeviceStateListening) {
-
-    //}
-
-    /* Default page switching */
-    ui_bridge_switch_page(target_page);
 }
 
 static void ui_bridge_base_container_event_cb(lv_event_t *e)
@@ -528,6 +567,11 @@ static void ui_bridge_base_container_event_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED)
     {
+        if (ui_bridge_should_ignore_click())
+        {
+            ESP_LOGI(TAG, "ignore click after swipe");
+            return;
+        }
         ESP_LOGI(TAG, "屏幕点击");
         if (ui_bridge_is_on_home_page())
         {
@@ -732,10 +776,20 @@ void ui_bridge_switch_page(const char *page_id)
         return;
     }
     auto &app = Application::GetInstance();
-    if (app.GetDeviceState() == kDeviceStateSpeaking && app.GetDeviceState() == kDeviceStateListening)
+    if (app.GetDeviceState() == kDeviceStateSpeaking || app.GetDeviceState() == kDeviceStateListening)
     {
         // ESP_LOGI(TAG, "先切换到空闲态,再变化UI");
         app.SwitchToIdle();
+    }
+
+    /* Set dummy draw mode for home page */
+    lv_display_t *disp = lv_display_get_default();
+    bool enable_dummy = (strcmp(page_id, UI_BRIDGE_PAGE_HOME) == 0);
+
+    if (!enable_dummy && s_cached_emote_display != nullptr)
+    {
+        s_cached_emote_display->PauseAnimationsForLvgl();
+        vTaskDelay(pdMS_TO_TICKS(80));
     }
 
     /* Update current page state */
@@ -743,9 +797,6 @@ void ui_bridge_switch_page(const char *page_id)
 
     esp_lv_adapter_lock(-1);
 
-    /* Set dummy draw mode for home page */
-    lv_display_t *disp = lv_display_get_default();
-    bool enable_dummy = (strcmp(page_id, UI_BRIDGE_PAGE_HOME) == 0);
     if (disp != nullptr)
     {
         esp_lv_adapter_set_dummy_draw(disp, enable_dummy);
@@ -776,7 +827,10 @@ void ui_bridge_switch_page(const char *page_id)
     if (enable_dummy)
     {
         ui_bridge_refresh_emote_display();
-        app.ToggleChatState();
+        if (s_cached_emote_display != nullptr)
+        {
+            s_cached_emote_display->ResumeAnimationsForEmote();
+        }
     }
 }
 

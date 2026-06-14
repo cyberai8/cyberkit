@@ -283,8 +283,9 @@ namespace emote
             .task = GFX_EMOTE_INIT_CONFIG()};
 
         gfx_cfg.task.task_stack_caps = MALLOC_CAP_DEFAULT;
-        gfx_cfg.task.task_affinity = 0;
-        gfx_cfg.task.task_priority = 5;
+        // Keep the graphics renderer off CPU0, where WiFi/LwIP and the main task run.
+        gfx_cfg.task.task_affinity = 1;
+        gfx_cfg.task.task_priority = 4;
         gfx_cfg.task.task_stack = 8 * 1024;
 
         *engine_handle = gfx_emote_init(&gfx_cfg);
@@ -1347,6 +1348,52 @@ namespace emote
         }
 
         gfx_emote_refresh_all(handle);
+    }
+
+    void EmoteDisplay::PauseAnimationsForLvgl()
+    {
+        if (!engine_)
+        {
+            return;
+        }
+
+        DisplayLockGuard lock(this);
+        ESP_LOGI(TAG, "Pause emote animations for LVGL page");
+        if (g_obj_anim_eye)
+        {
+            gfx_anim_stop(g_obj_anim_eye);
+        }
+        if (g_obj_anim_listen)
+        {
+            gfx_anim_stop(g_obj_anim_listen);
+        }
+        if (g_obj_anim_emerg_dlg)
+        {
+            gfx_anim_stop(g_obj_anim_emerg_dlg);
+        }
+    }
+
+    void EmoteDisplay::ResumeAnimationsForEmote()
+    {
+        if (!engine_)
+        {
+            return;
+        }
+
+        DisplayLockGuard lock(this);
+        ESP_LOGI(TAG, "Resume emote animations for home page");
+        if (g_obj_anim_eye && gfx_obj_get_visible(g_obj_anim_eye))
+        {
+            gfx_anim_start(g_obj_anim_eye);
+        }
+        if (g_obj_anim_listen && gfx_obj_get_visible(g_obj_anim_listen))
+        {
+            gfx_anim_start(g_obj_anim_listen);
+        }
+        if (g_obj_anim_emerg_dlg && gfx_obj_get_visible(g_obj_anim_emerg_dlg))
+        {
+            gfx_anim_start(g_obj_anim_emerg_dlg);
+        }
     }
 
     // 显示低电量弹窗的函数

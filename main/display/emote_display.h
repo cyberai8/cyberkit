@@ -94,6 +94,8 @@ public:
      * Internally calls gfx_emote_refresh_all() with the engine handle.
      */
     void RefreshAll();
+    void PauseAnimationsForLvgl();
+    void ResumeAnimationsForEmote();
 
     inline std::shared_ptr<LvglFont> text_font() const
     {

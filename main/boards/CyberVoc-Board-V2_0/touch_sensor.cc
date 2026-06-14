@@ -68,6 +68,10 @@ static void touch_btn_event_cb(void *button_handle, void *usr_data)
             
             if(ui_bridge_is_on_home_page())
             {
+                if (ui_bridge_interactions_suppressed()) {
+                    ESP_LOGI(TAG, "Touch wake ignored during gesture cooldown");
+                    break;
+                }
                 auto &app = Application::GetInstance();
                 if (app.GetDeviceState() == kDeviceStateListening || app.GetDeviceState() == kDeviceStateSpeaking) {
                     
@@ -180,6 +184,12 @@ static void touch_slider_callback(touch_slider_handle_t handle, touch_slider_eve
 
     case TOUCH_SLIDER_EVENT_RELEASE:
        { 
+        if (is_sliding_detected || !ui_bridge_is_on_home_page() || ui_bridge_interactions_suppressed()) {
+            ESP_LOGI(TAG, "Touch slider release ignored (sliding=%d, home=%d, suppressed=%d)",
+                     is_sliding_detected, ui_bridge_is_on_home_page(), ui_bridge_interactions_suppressed());
+            is_sliding_detected = false;
+            break;
+        }
         auto &app = Application::GetInstance();
         if (app.GetDeviceState() == kDeviceStateListening || app.GetDeviceState() == kDeviceStateSpeaking) {
             app.TriggerWakeWord(Lang::Strings::TOUCH_HEAD);

@@ -242,8 +242,8 @@ void start_lvgl(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel
 
     ESP_LOGI(TAG, "Initializing LVGL adapter, width:%d, height:%d", width, height);
     esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
-    adapter_config.task_priority = 5;
-    adapter_config.task_core_id = 0;
+    adapter_config.task_priority = 4;
+    adapter_config.task_core_id = 1;
     adapter_config.tick_period_ms = 50;
     adapter_config.task_min_delay_ms = 10;
     adapter_config.task_max_delay_ms = 1000;
@@ -257,8 +257,8 @@ void start_lvgl(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel
                                                          static_cast<uint16_t>(height),
                                                          ESP_LV_ADAPTER_ROTATE_0);
     display_config.profile.use_psram = true;
-    // display_config.profile.buffer_height = 20;
-    display_config.profile.require_double_buffer = true;
+    display_config.profile.buffer_height = 20;
+    display_config.profile.require_double_buffer = false;
 
     lv_display_t *display_ = esp_lv_adapter_register_display(&display_config);
     if (display_ == nullptr) {
@@ -286,7 +286,7 @@ void EspS3Cat::Initializest77916Display(uint8_t pcb_verison)
     esp_lcd_panel_handle_t panel = nullptr;
 
     esp_lcd_panel_io_spi_config_t io_config = ST77916_PANEL_IO_QSPI_CONFIG(QSPI_PIN_NUM_LCD_CS, NULL, NULL);
-    io_config.trans_queue_depth = 1;
+    io_config.trans_queue_depth = 16;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)QSPI_LCD_HOST, &io_config, &panel_io));
     st77916_vendor_config_t vendor_config = {
         .init_cmds = vendor_specific_init_yysj,
