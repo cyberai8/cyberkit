@@ -356,6 +356,7 @@ void EspS3Cat::InitializeButtons()
                 ESP_LOGI(TAG, "Boot button pressed, enter WiFi configuration mode");
                 EnterWifiConfigMode();
             }
+            app.WakeWordInvoke("你好");
             app.ToggleChatState();
         }
     });
