@@ -9,7 +9,6 @@ sdkconfig.old
 # sdkconfig
 dependencies.lock
 .env
-releases/
 main/assets/lang_config.h
 .DS_Store
 .cache
@@ -17,3 +16,5 @@ main/assets/lang_config.h
 # *.bin
 mmap_generate_*.h
 .clangd
+.codex
+.agents

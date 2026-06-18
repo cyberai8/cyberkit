@@ -39,6 +39,24 @@
 
 ---
 
+## 固件下载
+
+预编译固件统一放在仓库根目录的 `releases/` 文件夹中。用户如果只需要烧录固件，可以只下载这个文件夹里的对应 `.zip` 文件，不需要下载完整源码。
+
+当前固件包：
+
+- `releases/v2.0.5.6_CyberVoc-Board-V1_2.zip`
+- `releases/v2.0.5.6_CyberVoc-Board-V2_0.zip`
+
+每个 `.zip` 内包含 `merged-binary.bin`，用于烧录对应硬件版本。更新固件时可通过发布脚本重新生成：
+
+```bash
+python scripts/release.py CyberVoc-Board-V1_2
+python scripts/release.py CyberVoc-Board-V2_0
+```
+
+---
+
 ## 快速开始（编译 / 烧录）
 
 ### 1) 准备 ESP-IDF 环境
