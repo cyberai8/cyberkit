@@ -1007,13 +1007,17 @@ void Application::SetDeviceState(DeviceState state)
     case kDeviceStateListening:
         display->SetStatus(Lang::Strings::LISTENING);
         display->SetEmotion("neutral");
+
+        // Entering listening is also the protocol-level start signal. Send it
+        // even when the capture processor was left running by a prior audio
+        // configuration change.
+        if (protocol_) {
+            protocol_->SendStartListening(listening_mode_);
+        }
         
         // Make sure the audio processor is running
         if (!audio_service_.IsAudioProcessorRunning())
         {
-            // Send the start listening command
-            protocol_->SendStartListening(listening_mode_);
-            
             // CRITICAL FIX: Ensure AEC is enabled before starting voice processing
             if (aec_mode_ == kAecOnDeviceSide) {
                 audio_service_.EnableDeviceAec(true);
@@ -1230,9 +1234,6 @@ void Application::SetAecMode(AecMode mode)
             display->ShowNotification(Lang::Strings::RTC_MODE_ON);
             break;
         }
-
-        // 重新启用语音处理
-        audio_service_.EnableVoiceProcessing(true);
 
         // If the AEC mode is changed, close the audio channel
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
