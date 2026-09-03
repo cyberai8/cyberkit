@@ -415,34 +415,6 @@ void EspS3Cat::HidePowerOverlay()
     }
 }
 
-bool EspS3Cat::ShowBootAnimation()
-{
-    auto* emote_display = dynamic_cast<emote::EmoteDisplay*>(display_);
-    if (emote_display != nullptr) {
-        return emote_display->ShowBootAnimation();
-    }
-    return false;
-}
-
-void EspS3Cat::boot_power_overlay_task(void* arg)
-{
-    auto* self = static_cast<EspS3Cat*>(arg);
-    if (self == nullptr) {
-        vTaskDelete(NULL);
-        return;
-    }
-    const int64_t deadline = esp_timer_get_time() + 5000000;
-    while (esp_timer_get_time() < deadline) {
-        if (self->ShowBootAnimation()) {
-            vTaskDelete(NULL);
-            return;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    ESP_LOGW(TAG, "Boot animation skipped: boot.eaf not ready before timeout");
-    vTaskDelete(NULL);
-}
-
 static void power_key_task(void* arg)
 {
     auto* self = static_cast<EspS3Cat*>(arg);
@@ -942,7 +914,6 @@ EspS3Cat::EspS3Cat()
     ESP_LOGI(TAG, "SPI initialized");
     Initializest77916Display(pcb_verison);
     ESP_LOGI(TAG, "Display initialized");
-    xTaskCreate(boot_power_overlay_task, "boot_power_msg", 3072, this, 3, nullptr);
     InitializeButtons();
     ESP_LOGI(TAG, "Buttons initialized");
     InitializeCst816sTouchPad();

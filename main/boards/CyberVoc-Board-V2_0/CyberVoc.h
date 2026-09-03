@@ -83,12 +83,10 @@ private:
     bool IsPowerKeyPressed() const;
     void ShowPowerOverlay(const char* message);
     void HidePowerOverlay();
-    bool ShowBootAnimation();
     void ShowHappyTouchFeedback();
     void InitializeQmi8658();
     void handle_violent_shake_event();
     static void imu_event_task(void* arg);
-    static void boot_power_overlay_task(void* arg);
     static void head_touch_gpio_task(void* arg);
 
     void Initializebq27220();
