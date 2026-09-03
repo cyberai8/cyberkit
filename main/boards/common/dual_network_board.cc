@@ -8,11 +8,6 @@
 
 static const char *TAG = "DualNetworkBoard";
 
-static constexpr int kInitialMl307PowerSettleMs = 2000;
-static constexpr int kInitialMl307DetectTimeoutMs = 3000;
-static constexpr int kInitialMl307RetryDelayMs = 1000;
-static constexpr int kInitialMl307DetectAttempts = 2;
-
 DualNetworkBoard::DualNetworkBoard(gpio_num_t ml307_tx_pin, gpio_num_t ml307_rx_pin, gpio_num_t ml307_dtr_pin,
                                    int32_t default_net_type, gpio_num_t ml307_power_en_pin,
                                    uart_port_t ml307_uart_num) 
@@ -26,7 +21,6 @@ DualNetworkBoard::DualNetworkBoard(gpio_num_t ml307_tx_pin, gpio_num_t ml307_rx_
     {
         Settings settings("network", false);
         ml307_available_ = settings.GetBool("ml307_available", false);
-        auto_select_done_ = settings.GetBool("auto_done", settings.GetInt("type", -1) != -1);
     }
 
     ConfigureMl307PowerPin();
@@ -40,7 +34,7 @@ DualNetworkBoard::DualNetworkBoard(gpio_num_t ml307_tx_pin, gpio_num_t ml307_rx_
 
 NetworkType DualNetworkBoard::LoadNetworkTypeFromSettings(int32_t default_net_type) {
     Settings settings("network", true);
-    int network_type = settings.GetInt("type", default_net_type); // 默认使用ML307 (1)
+    int network_type = settings.GetInt("type", default_net_type); // 默认使用 WiFi (0)
     return network_type == 1 ? NetworkType::ML307 : NetworkType::WIFI;
 }
 
@@ -48,7 +42,6 @@ void DualNetworkBoard::SaveNetworkTypeToSettings(NetworkType type) {
     Settings settings("network", true);
     int network_type = (type == NetworkType::ML307) ? 1 : 0;
     settings.SetInt("type", network_type);
-    settings.SetBool("auto_done", true);
 }
 
 void DualNetworkBoard::InitializeCurrentBoard() {
@@ -85,61 +78,6 @@ void DualNetworkBoard::SetMl307Power(bool enabled) {
     gpio_set_level(ml307_power_en_pin_, enabled ? 1 : 0);
 }
 
-bool DualNetworkBoard::ProbeMl307Presence(int delay_ms, int timeout_ms) {
-    if (ml307_power_en_pin_ == GPIO_NUM_NC) {
-        return false;
-    }
-
-    SetMl307Power(true);
-    if (delay_ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    }
-
-    for (int attempt = 1; attempt <= kInitialMl307DetectAttempts; ++attempt) {
-        auto modem = AtModem::Detect(ml307_tx_pin_, ml307_rx_pin_, ml307_dtr_pin_, 921600, timeout_ms, ml307_uart_num_);
-        if (modem != nullptr) {
-            ESP_LOGI(TAG, "Initial ML307 presence probe succeeded (attempt %d/%d)",
-                     attempt, kInitialMl307DetectAttempts);
-            return true;
-        }
-        ESP_LOGW(TAG, "Initial ML307 presence probe failed (attempt %d/%d)",
-                 attempt, kInitialMl307DetectAttempts);
-        if (attempt < kInitialMl307DetectAttempts) {
-            vTaskDelay(pdMS_TO_TICKS(kInitialMl307RetryDelayMs));
-        }
-    }
-    return false;
-}
-
-void DualNetworkBoard::SelectInitialNetworkIfNeeded() {
-    if (auto_select_done_) {
-        return;
-    }
-
-    auto display = GetDisplay();
-    if (display != nullptr) {
-        display->SetStatus(Lang::Strings::CONNECTING);
-        display->SetStatus(Lang::Strings::DETECTING_MODULE);
-    }
-
-    const bool available = ProbeMl307Presence(kInitialMl307PowerSettleMs, kInitialMl307DetectTimeoutMs);
-    ml307_available_ = available;
-    network_type_ = available ? NetworkType::ML307 : NetworkType::WIFI;
-
-    {
-        Settings settings("network", true);
-        settings.SetBool("ml307_available", available);
-        settings.SetBool("auto_done", true);
-    }
-    SaveNetworkTypeToSettings(network_type_);
-    auto_select_done_ = true;
-
-    if (!available) {
-        SetMl307Power(false);
-    }
-    InitializeCurrentBoard();
-}
-
 void DualNetworkBoard::SwitchNetworkType() {
     auto display = GetDisplay();
     if (network_type_ == NetworkType::WIFI) {    
@@ -155,13 +93,6 @@ void DualNetworkBoard::SwitchNetworkType() {
 }
 
 void DualNetworkBoard::SetNetworkType(NetworkType type) {
-    if (type == NetworkType::ML307 && !ml307_available_) {
-        auto display = GetDisplay();
-        if (display != nullptr) {
-            display->ShowNotification("未检测到4G模块");
-        }
-        return;
-    }
     if (network_type_ == type) {
         auto display = GetDisplay();
         if (display != nullptr) {
@@ -198,7 +129,6 @@ std::string DualNetworkBoard::GetBoardType() {
 
 void DualNetworkBoard::StartNetwork() {
     auto display = Board::GetInstance().GetDisplay();
-    SelectInitialNetworkIfNeeded();
     
     if (network_type_ == NetworkType::WIFI) {
         display->SetStatus(Lang::Strings::CONNECTING);

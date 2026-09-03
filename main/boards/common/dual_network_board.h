@@ -19,7 +19,7 @@ class DualNetworkBoard : public Board {
 private:
     // 使用基类指针存储当前活动的板卡
     std::unique_ptr<Board> current_board_;
-    NetworkType network_type_ = NetworkType::ML307;  // Default to ML307
+    NetworkType network_type_ = NetworkType::WIFI;  // Default to WiFi
 
     // ML307的引脚配置
     gpio_num_t ml307_tx_pin_;
@@ -27,7 +27,6 @@ private:
     gpio_num_t ml307_dtr_pin_;
     gpio_num_t ml307_power_en_pin_;
     uart_port_t ml307_uart_num_;
-    bool auto_select_done_ = false;
     bool ml307_available_ = false;
     
     // 从Settings加载网络类型
@@ -40,12 +39,10 @@ private:
     void InitializeCurrentBoard();
     void ConfigureMl307PowerPin();
     void SetMl307Power(bool enabled);
-    bool ProbeMl307Presence(int delay_ms, int timeout_ms);
-    void SelectInitialNetworkIfNeeded();
  
 public:
     DualNetworkBoard(gpio_num_t ml307_tx_pin, gpio_num_t ml307_rx_pin, gpio_num_t ml307_dtr_pin = GPIO_NUM_NC,
-                     int32_t default_net_type = 1, gpio_num_t ml307_power_en_pin = GPIO_NUM_NC,
+                     int32_t default_net_type = 0, gpio_num_t ml307_power_en_pin = GPIO_NUM_NC,
                      uart_port_t ml307_uart_num = UART_NUM_1);
     virtual ~DualNetworkBoard() = default;
  
