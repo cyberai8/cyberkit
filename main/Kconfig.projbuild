@@ -243,18 +243,22 @@ choice DISPLAY_ESP32S3_KORVO2_V3
         bool "ILI9341 240*320"
 endchoice
 
-choice
-    prompt "Net Configuration Mode"
-    default USE_SOFTAP_NET_CONFIGURING
+menu "WiFi Configuration Method"
     help
-        Select net configuration
+        WiFi Configuration Method Selection
 
-    config USE_SOFTAP_NET_CONFIGURING
-        bool "SoftAP"
+    config USE_HOTSPOT_WIFI_PROVISIONING
+        bool "Hotspot"
+        default y
+        help
+            Use WiFi Hotspot to transmit WiFi configuration data
+
     config USE_BLUFI_NET_CONFIGURING
         select BLUFI_WIFICFG_ENABLED
-        bool "Blufi"
-endchoice
+        bool "ESP-BluFi"
+        help
+            Use the project's BLUFI provisioning flow
+endmenu
 
 choice DISPLAY_ESP32S3_AUDIO_BOARD
     depends on BOARD_TYPE_WAVESHARE_S3_AUDIO_BOARD

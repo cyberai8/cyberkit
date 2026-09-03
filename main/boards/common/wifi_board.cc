@@ -11,12 +11,11 @@
 #include <esp_network.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <esp_mac.h>
 
 #include <font_awesome.h>
-#include <wifi_station.h>
-#include <wifi_configuration_ap.h>
+#include <wifi_manager.h>
 #include <ssid_manager.h>
-#include "afsk_demod.h"
 
 #include "mqtt_protocol.h"
 #include "websocket_protocol.h"
@@ -24,9 +23,30 @@
 #include <memory>
 #include "display/lcd_display.h"
 #ifdef CONFIG_USE_BLUFI_NET_CONFIGURING
-#include "esp_mac.h"
 #include "blufi_wificfg.h"
 #endif
+
+static bool InitializeWifiManager() {
+    auto& wifi_manager = WifiManager::GetInstance();
+    if (wifi_manager.IsInitialized()) {
+        return true;
+    }
+
+    WifiManagerConfig config;
+    config.ssid_prefix = "Xiaozhi";
+    config.language = Lang::CODE;
+    config.show_ota_config = true;
+    config.show_sleep_config = true;
+
+    uint8_t mac[6];
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        char hostname[32];
+        snprintf(hostname, sizeof(hostname), "%s-%02X%02X", config.ssid_prefix.c_str(), mac[4], mac[5]);
+        config.station_hostname = hostname;
+    }
+
+    return wifi_manager.Initialize(config);
+}
 
 static const char *TAG = "WifiBoard";
 
@@ -305,42 +325,81 @@ void WifiBoard::EnterWifiConfigMode() {
     auto& application = Application::GetInstance();
     application.SetDeviceState(kDeviceStateWifiConfiguring);
 
-    auto& wifi_ap = WifiConfigurationAp::GetInstance();
-    wifi_ap.SetLanguage(Lang::CODE);
-    wifi_ap.SetSsidPrefix("Xiaozhi");
-    wifi_ap.Start();
+    if (!InitializeWifiManager()) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi manager for hotspot provisioning");
+        return;
+    }
 
-    // 等待 1.5 秒，确保 AP 启动完成
+    auto& wifi_manager = WifiManager::GetInstance();
+    wifi_manager.StartConfigAp();
+
+    // Keep the startup flow in WiFi provisioning until the portal exits.
+    // Application::Start() performs OTA/protocol initialization after
+    // StartNetwork() returns, so returning here would incorrectly run OTA
+    // while the device is still only connected to its own AP.
     vTaskDelay(pdMS_TO_TICKS(1500));
 
-    // 显示 WiFi 配置 AP 的 SSID 和 Web 服务器 URL
     std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
-    hint += wifi_ap.GetSsid();
+    hint += wifi_manager.GetApSsid();
     hint += Lang::Strings::ACCESS_VIA_BROWSER;
-    hint += wifi_ap.GetWebServerUrl();
-    
-    // 通知 WiFi 配置提示用户连接到 AP 并访问 Web 服务器
+    hint += wifi_manager.GetApWebUrl();
     application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "gear", Lang::Sounds::OGG_WIFICONFIG);
 
-    #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
-    auto display = Board::GetInstance().GetDisplay();
-    auto codec = Board::GetInstance().GetAudioCodec();
-    int channel = 1;
-    if (codec) {
-        channel = codec->input_channels();
-    }
-    ESP_LOGI(TAG, "Start receiving WiFi credentials from audio, input channels: %d", channel);
-    audio_wifi_config::ReceiveWifiCredentialsFromAudio(&application, &wifi_ap, display, channel);
-    #endif
-    
-    // Wait forever until reset after configuration
+    // The config portal runs in its own HTTP server task. Once the user
+    // submits credentials and exits the portal, the event callback below
+    // reboots the device. Until then, do not continue normal startup.
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 #endif
 }
 
 void WifiBoard::StartNetwork() {
+    if (!InitializeWifiManager()) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi manager");
+        return;
+    }
+
+    auto& wifi_manager = WifiManager::GetInstance();
+    wifi_manager.SetEventCallback([this, &wifi_manager](WifiEvent event, const std::string& data) {
+        auto display = Board::GetInstance().GetDisplay();
+        switch (event) {
+            case WifiEvent::Scanning:
+                if (display != nullptr) {
+                    display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
+                }
+                break;
+            case WifiEvent::Connecting: {
+                if (display != nullptr) {
+                    std::string notification = Lang::Strings::CONNECT_TO;
+                    notification += data + "...";
+                    display->ShowNotification(notification.c_str(), 30000);
+                }
+                break;
+            }
+            case WifiEvent::Connected: {
+                wifi_config_mode_ = false;
+                if (display != nullptr) {
+                    std::string notification = Lang::Strings::CONNECTED_TO;
+                    notification += data + "...";
+                    display->ShowNotification(notification.c_str(), 30000);
+                }
+                break;
+            }
+            case WifiEvent::ConfigModeEnter:
+                wifi_config_mode_ = true;
+                break;
+            case WifiEvent::ConfigModeExit:
+                wifi_config_mode_ = false;
+                ESP_LOGI(TAG, "Config portal exit requested, rebooting to apply WiFi");
+                vTaskDelay(pdMS_TO_TICKS(300));
+                esp_restart();
+                break;
+            default:
+                break;
+        }
+    });
+
     // User can press BOOT button while starting to enter WiFi configuration mode
     if (wifi_config_mode_) {
         EnterWifiConfigMode();
@@ -356,29 +415,15 @@ void WifiBoard::StartNetwork() {
         return;
     }
 
-    auto& wifi_station = WifiStation::GetInstance();
-    wifi_station.OnScanBegin([this]() {
-        auto display = Board::GetInstance().GetDisplay();
-        display->ShowNotification(Lang::Strings::SCANNING_WIFI, 30000);
-    });
-    wifi_station.OnConnect([this](const std::string& ssid) {
-        auto display = Board::GetInstance().GetDisplay();
-        std::string notification = Lang::Strings::CONNECT_TO;
-        notification += ssid;
-        notification += "...";
-        display->ShowNotification(notification.c_str(), 30000);
-    });
-    wifi_station.OnConnected([this](const std::string& ssid) {
-        auto display = Board::GetInstance().GetDisplay();
-        std::string notification = Lang::Strings::CONNECTED_TO;
-        notification += ssid;
-        display->ShowNotification(notification.c_str(), 30000);
-    });
-    wifi_station.Start();
+    wifi_manager.StartStation();
 
     // Try to connect to WiFi, if failed, launch the WiFi configuration AP
-    if (!wifi_station.WaitForConnected(60 * 1000)) {
-        wifi_station.Stop();
+    const int64_t deadline = esp_timer_get_time() + 60 * 1000 * 1000LL;
+    while (!wifi_manager.IsConnected() && esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!wifi_manager.IsConnected()) {
+        wifi_manager.StopStation();
         wifi_config_mode_ = true;
         EnterWifiConfigMode();
         return;
@@ -394,11 +439,11 @@ const char* WifiBoard::GetNetworkStateIcon() {
     if (wifi_config_mode_) {
         return FONT_AWESOME_WIFI;
     }
-    auto& wifi_station = WifiStation::GetInstance();
-    if (!wifi_station.IsConnected()) {
+    auto& wifi_manager = WifiManager::GetInstance();
+    if (!wifi_manager.IsConnected()) {
         return FONT_AWESOME_WIFI_SLASH;
     }
-    int8_t rssi = wifi_station.GetRssi();
+    int rssi = wifi_manager.GetRssi();
     if (rssi >= -60) {
         return FONT_AWESOME_WIFI;
     } else if (rssi >= -70) {
@@ -410,15 +455,15 @@ const char* WifiBoard::GetNetworkStateIcon() {
 
 std::string WifiBoard::GetBoardJson() {
     // Set the board type for OTA
-    auto& wifi_station = WifiStation::GetInstance();
+    auto& wifi_manager = WifiManager::GetInstance();
     std::string board_json = R"({)";
     board_json += R"("type":")" + std::string(BOARD_TYPE) + R"(",)";
     board_json += R"("name":")" + std::string(BOARD_NAME) + R"(",)";
     if (!wifi_config_mode_) {
-        board_json += R"("ssid":")" + wifi_station.GetSsid() + R"(",)";
-        board_json += R"("rssi":)" + std::to_string(wifi_station.GetRssi()) + R"(,)";
-        board_json += R"("channel":)" + std::to_string(wifi_station.GetChannel()) + R"(,)";
-        board_json += R"("ip":")" + wifi_station.GetIpAddress() + R"(",)";
+        board_json += R"("ssid":")" + wifi_manager.GetSsid() + R"(",)";
+        board_json += R"("rssi":)" + std::to_string(wifi_manager.GetRssi()) + R"(,)";
+        board_json += R"("channel":)" + std::to_string(wifi_manager.GetChannel()) + R"(,)";
+        board_json += R"("ip":")" + wifi_manager.GetIpAddress() + R"(",)";
     }
     board_json += R"("mac":")" + SystemInfo::GetMacAddress() + R"(")";
     board_json += R"(})";
@@ -426,8 +471,8 @@ std::string WifiBoard::GetBoardJson() {
 }
 
 void WifiBoard::SetPowerSaveMode(bool enabled) {
-    auto& wifi_station = WifiStation::GetInstance();
-    wifi_station.SetPowerSaveMode(enabled);
+    auto& wifi_manager = WifiManager::GetInstance();
+    wifi_manager.SetPowerSaveLevel(enabled ? WifiPowerSaveLevel::BALANCED : WifiPowerSaveLevel::PERFORMANCE);
 }
 
 void WifiBoard::ResetWifiConfiguration() {
@@ -508,10 +553,10 @@ std::string WifiBoard::GetDeviceStatusJson() {
 
     // Network
     auto network = cJSON_CreateObject();
-    auto& wifi_station = WifiStation::GetInstance();
+    auto& wifi_manager = WifiManager::GetInstance();
     cJSON_AddStringToObject(network, "type", "wifi");
-    cJSON_AddStringToObject(network, "ssid", wifi_station.GetSsid().c_str());
-    int rssi = wifi_station.GetRssi();
+    cJSON_AddStringToObject(network, "ssid", wifi_manager.GetSsid().c_str());
+    int rssi = wifi_manager.GetRssi();
     if (rssi >= -60) {
         cJSON_AddStringToObject(network, "signal", "strong");
     } else if (rssi >= -70) {

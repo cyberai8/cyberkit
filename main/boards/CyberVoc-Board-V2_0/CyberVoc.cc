@@ -17,7 +17,7 @@
 #include "touch_sensor.h"
 #include "ui_bridge.h"
 
-#include <wifi_station.h>
+#include <wifi_manager.h>
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 //#include <driver/i2c.h>
@@ -352,7 +352,7 @@ void EspS3Cat::InitializeButtons()
                 return;
             }
 
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
+            if (app.GetDeviceState() == kDeviceStateStarting && !WifiManager::GetInstance().IsConnected()) {
                 ESP_LOGI(TAG, "Boot button pressed, enter WiFi configuration mode");
                 EnterWifiConfigMode();
             }
