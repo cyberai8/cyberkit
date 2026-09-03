@@ -80,6 +80,14 @@ public:
 
     virtual Music *GetMusic();
     virtual TouchSensor *GetTouchSensor();
+    virtual bool IsHeadTouchEnabled() const {
+        return touch_sensor_ != nullptr && touch_sensor_->get_touch();
+    }
+    virtual void SetHeadTouchEnabled(bool enabled) {
+        if (touch_sensor_ != nullptr) {
+            touch_sensor_->set_touch(enabled);
+        }
+    }
     virtual bool IsShakeEnabled() const { return shake_enabled_; }
     virtual void SetShakeEnabled(bool enabled) { shake_enabled_ = enabled; }
 };

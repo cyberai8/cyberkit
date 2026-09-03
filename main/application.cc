@@ -80,13 +80,18 @@ Application::Application()
 //     aec_mode_ = kAecOff;
 #endif
     Settings audio_settings(kAudioSettingsNamespace, true);
-    int32_t saved_aec_mode = audio_settings.GetInt(kAecModeSettingsKey, static_cast<int32_t>(kAecOff));
+    // Use -1 as a sentinel so the default-off value is persisted on first boot
+    // without overwriting a user's later AEC preference.
+    int32_t saved_aec_mode = audio_settings.GetInt(kAecModeSettingsKey, -1);
     if (saved_aec_mode == static_cast<int32_t>(kAecOnDeviceSide)) {
         aec_mode_ = kAecOnDeviceSide;
     } else if (saved_aec_mode == static_cast<int32_t>(kAecOnServerSide)) {
         aec_mode_ = kAecOnServerSide;
     } else {
         aec_mode_ = kAecOff;
+        if (saved_aec_mode != static_cast<int32_t>(kAecOff)) {
+            audio_settings.SetInt(kAecModeSettingsKey, static_cast<int32_t>(kAecOff));
+        }
     }
     ESP_LOGI(TAG, "AEC mode loaded from NVS: %d", static_cast<int>(aec_mode_));
     

@@ -282,13 +282,8 @@ void McpServer::AddCommonTools()
             PropertyList({Property("touch", kPropertyTypeBoolean)}),
             [&board](const PropertyList &properties) -> ReturnValue
             {
-                auto touch_sensor = board.GetTouchSensor();
-                if (touch_sensor)
-                {
-                    touch_sensor->set_touch(properties["touch"].value<bool>());
-                    return true;
-                }
-                return false;
+                board.SetHeadTouchEnabled(properties["touch"].value<bool>());
+                return true;
             });
     AddTool("self.shake.set_shake",
             "设置设备是否开启摇晃事件",

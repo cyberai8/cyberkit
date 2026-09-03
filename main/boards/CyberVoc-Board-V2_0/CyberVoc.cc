@@ -16,6 +16,7 @@
 #include "cybervoc_tools.h"
 #include "touch_sensor.h"
 #include "ui_bridge.h"
+#include "settings.h"
 
 #include <wifi_manager.h>
 #include <esp_log.h>
@@ -40,6 +41,13 @@
 #include "assets/lang_config.h"
 
 #define TAG "CyberVoc"
+
+namespace {
+constexpr char kFeatureSettingsNamespace[] = "features";
+// NVS key names are limited to 15 characters (excluding the terminator).
+constexpr char kHeadTouchEnabledKey[] = "head_touch";
+constexpr char kShakeEnabledKey[] = "shake_enabled";
+}
 
 temperature_sensor_handle_t temp_sensor = NULL;
 float tsens_value;
@@ -559,6 +567,22 @@ void EspS3Cat::ShowHappyTouchFeedback()
     }
 }
 
+void EspS3Cat::SetHeadTouchEnabled(bool enabled)
+{
+    head_touch_enabled_ = enabled;
+    Settings settings(kFeatureSettingsNamespace, true);
+    settings.SetBool(kHeadTouchEnabledKey, enabled);
+    ESP_LOGI(TAG, "Head touch %s (saved to NVS)", enabled ? "enabled" : "disabled");
+}
+
+void EspS3Cat::SetShakeEnabled(bool enabled)
+{
+    shake_enabled_ = enabled;
+    Settings settings(kFeatureSettingsNamespace, true);
+    settings.SetBool(kShakeEnabledKey, enabled);
+    ESP_LOGI(TAG, "Shake detection %s (saved to NVS)", enabled ? "enabled" : "disabled");
+}
+
 void EspS3Cat::head_touch_gpio_task(void* arg)
 {
     auto* self = static_cast<EspS3Cat*>(arg);
@@ -585,6 +609,11 @@ void EspS3Cat::head_touch_gpio_task(void* arg)
             stable_level = raw_level;
             const bool active = (stable_level == HEAD_TOUCH_ACTIVE_LEVEL);
             if (self != nullptr && active && !was_active) {
+                if (!self->head_touch_enabled_) {
+                    ESP_LOGI(TAG, "Head touch GPIO%d ignored (disabled)", (int)HEAD_TOUCH_GPIO);
+                    was_active = active;
+                    continue;
+                }
                 const int64_t now = esp_timer_get_time();
                 if ((now - last_trigger_us) >= kTriggerCooldownUs) {
                     last_trigger_us = now;
@@ -905,6 +934,13 @@ EspS3Cat::EspS3Cat()
     : DualNetworkBoard(ML307_TX_PIN, ML307_RX_PIN, GPIO_NUM_NC, 0, ML307_EN_PIN, ML307_UART_NUM),
       boot_button_(BOOT_BUTTON_GPIO)
 {
+    Settings feature_settings(kFeatureSettingsNamespace, false);
+    head_touch_enabled_ = feature_settings.GetBool(kHeadTouchEnabledKey, false);
+    shake_enabled_ = feature_settings.GetBool(kShakeEnabledKey, false);
+    ESP_LOGI(TAG, "Feature settings: head touch=%s, shake=%s",
+             head_touch_enabled_ ? "on" : "off",
+             shake_enabled_ ? "on" : "off");
+
     InitializeI2c();//首先进行I2C初始化
     uint8_t pcb_verison = 0;
     ESP_LOGI(TAG, "CyberVoc V2_0 init");

@@ -41,8 +41,10 @@ public:
     {
         return touch_sensor_;
     }
-    //virtual bool IsShakeEnabled() const { return shake_enabled_; }
-    virtual void SetShakeEnabled(bool enabled) { shake_enabled_ = enabled; }
+    virtual bool IsHeadTouchEnabled() const override { return head_touch_enabled_; }
+    virtual void SetHeadTouchEnabled(bool enabled) override;
+    virtual bool IsShakeEnabled() const override { return shake_enabled_; }
+    virtual void SetShakeEnabled(bool enabled) override;
 
     // Power off by releasing the latch (PG2).
     void PowerOff();
@@ -56,7 +58,8 @@ private:
     BaseControl* base_control_;
     AudioAnalysis* audio_analysis_;
     TouchSensor* touch_sensor_ = nullptr;
-    bool shake_enabled_ = true;
+    bool head_touch_enabled_ = false;
+    bool shake_enabled_ = false;
 
     i2c_bus_handle_t i2c_bus = NULL; // bq27220 uses this
     TaskHandle_t imu_task_handle_ = nullptr;

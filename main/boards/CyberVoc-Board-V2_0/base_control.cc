@@ -178,7 +178,15 @@ void BaseControl::HandleCommand(uint8_t cmd, uint8_t *data, int data_len)
                 ESP_LOGI(TAG, "Cyber base connected (reinserted)");
                 board_->SetAudioAnalysisMode(AudioAnalysisMode::DOA_FOLLOW);
                 auto &app = Application::GetInstance();
-                app.SetAecMode(kAecOff);
+                // The base uses its own audio analysis path. Only disable AEC
+                // when it is currently enabled; an already-disabled AEC must
+                // not trigger an unnecessary AFE reconfiguration.
+                if (app.GetAecMode() != kAecOff) {
+                    ESP_LOGI(TAG, "AEC is enabled, disabling it for base mode");
+                    app.SetAecMode(kAecOff);
+                } else {
+                    ESP_LOGI(TAG, "AEC is already disabled, no AEC change needed");
+                }
                 emote_display->InsertAnimDialog("insert", 3000);
             }
             break;
@@ -218,8 +226,8 @@ void BaseControl::HeartbeatCheckTimerCallback(void* arg)
 
         }
 
-        auto &app = Application::GetInstance();
-        app.SetAecMode(kAecOnDeviceSide);
+        // Do not enable AEC automatically when the base heartbeat is lost.
+        // AEC is user-controlled and defaults to the persisted NVS setting.
     }
 }
 
