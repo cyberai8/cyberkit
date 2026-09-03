@@ -20,6 +20,9 @@ static const char* TAG = "boot";
 
 static int select_partition_number(bootloader_state_t *bs);
 
+/* Optional project hook supplied by bootloader_components/vocat_power_latch. */
+void __attribute__((weak)) bootloader_before_init(void);
+
 /*
  * We arrive here after the ROM bootloader finished loading this second stage bootloader from flash.
  * The hardware is mostly uninitialized, flash cache is down and the app CPU is in reset.
@@ -27,6 +30,12 @@ static int select_partition_number(bootloader_state_t *bs);
  */
 void __attribute__((noreturn)) call_start_cpu0(void)
 {
+    // Keep the soft power latch asserted before bootloader_init() performs
+    // flash, clock, and other hardware initialization.
+    if (bootloader_before_init) {
+        bootloader_before_init();
+    }
+
     // 1. Hardware initialization
     if (bootloader_init() != ESP_OK) {
         bootloader_reset();
