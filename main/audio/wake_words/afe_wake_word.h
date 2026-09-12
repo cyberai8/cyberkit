@@ -15,7 +15,6 @@
 #include <functional>
 #include <atomic>
 #include <mutex>
-#include <condition_variable>
 
 #include "audio_codec.h"
 #include "wake_word.h"
@@ -60,7 +59,6 @@ private:
     std::deque<std::vector<int16_t>> wake_word_pcm_;
     std::deque<std::vector<uint8_t>> wake_word_opus_;
     std::mutex wake_word_mutex_;
-    std::condition_variable wake_word_cv_;
     std::mutex afe_data_mutex_;
     std::atomic<int> active_fetch_count_{0};
     bool detection_task_created_ = false;

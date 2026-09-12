@@ -1,6 +1,9 @@
 #include "audio_service.h"
 #include "application.h"
 #include "device_state.h"
+#include "board.h"
+#include "display/emote_display.h"
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <cstring>
 
@@ -528,6 +531,40 @@ void AudioService::EnsureCaptureInputReady() {
     codec_->EnableInput(true);
 }
 
+void AudioService::ReleaseWakeWordAfe() {
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    if (!wake_word_initialized_ || wake_word_ == nullptr) {
+        return;
+    }
+    EnableWakeWordDetection(false);
+    if (auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get())) {
+        if (afe_wake_word->Deinitialize()) {
+            wake_word_initialized_ = false;
+            ESP_LOGI(TAG, "Released WakeNet AFE (free internal for voice AFE)");
+        } else {
+            ESP_LOGW(TAG, "WakeNet AFE still busy; not released");
+        }
+    }
+#endif
+}
+
+void AudioService::ReleaseAudioProcessorAfe() {
+#if CONFIG_USE_AUDIO_PROCESSOR
+    if (!audio_processor_initialized_ || audio_processor_ == nullptr) {
+        return;
+    }
+    EnableVoiceProcessing(false);
+    if (auto* afe_processor = dynamic_cast<AfeAudioProcessor*>(audio_processor_.get())) {
+        if (afe_processor->Deinitialize()) {
+            audio_processor_initialized_ = false;
+            ESP_LOGI(TAG, "Released voice-processor AFE (free internal for WakeNet)");
+        } else {
+            ESP_LOGW(TAG, "Voice-processor AFE still busy; not released");
+        }
+    }
+#endif
+}
+
 void AudioService::EnableWakeWordDetection(bool enable) {
     if (!wake_word_) {
         return;
@@ -535,13 +572,30 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 
     ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
+        // Dual AFE + AEC cannot coexist on this board's internal SRAM budget.
+        if (!wake_word_initialized_) {
+            ReleaseAudioProcessorAfe();
+        }
         EnsureCaptureInputReady();
         if (!wake_word_initialized_) {
+            // Pause emote flushes while WakeNet allocates; concurrent SPI bounce
+            // fails when free internal DRAM is fragmented.
+            auto* display = Board::GetInstance().GetDisplay();
+            auto* emote = display ? dynamic_cast<emote::EmoteDisplay*>(display) : nullptr;
+            if (emote) {
+                emote->PauseAnimationsForLvgl();
+            }
             if (!wake_word_->Initialize(codec_, models_list_)) {
                 ESP_LOGE(TAG, "Failed to initialize wake word");
+                if (emote) {
+                    emote->ResumeAnimationsForEmote();
+                }
                 return;
             }
             wake_word_initialized_ = true;
+            if (emote) {
+                emote->ResumeAnimationsForEmote();
+            }
         }
         if (wake_word_->GetFeedSize() == 0) {
             ESP_LOGE(TAG, "Wake word initialized without a usable feed size");
@@ -559,9 +613,21 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 void AudioService::EnableVoiceProcessing(bool enable) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
+        // Free WakeNet before creating the AEC voice AFE (mutual exclusion).
+        if (!audio_processor_initialized_) {
+            ReleaseWakeWordAfe();
+        }
         EnsureCaptureInputReady();
         if (!audio_processor_initialized_) {
+            auto* display = Board::GetInstance().GetDisplay();
+            auto* emote = display ? dynamic_cast<emote::EmoteDisplay*>(display) : nullptr;
+            if (emote) {
+                emote->PauseAnimationsForLvgl();
+            }
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
+            if (emote) {
+                emote->ResumeAnimationsForEmote();
+            }
             if (audio_processor_->GetFeedSize() == 0) {
                 ESP_LOGE(TAG, "Failed to initialize voice processing AFE");
                 audio_processor_initialized_ = false;
@@ -771,7 +837,16 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
         models_list_ = esp_srmodel_init("model");
     }
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
-    if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
+    const size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "Before wake-word alloc: free_internal=%u largest=%u",
+             static_cast<unsigned>(free_internal),
+             static_cast<unsigned>(largest_internal));
+    // FreeRTOS mutex/queue objects require internal DRAM. Bail instead of abort().
+    if (largest_internal < 4096) {
+        ESP_LOGE(TAG, "Internal SRAM too low for wake word; skipping detector");
+        wake_word_ = nullptr;
+    } else if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<CustomWakeWord>();
     } else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
         wake_word_ = std::make_unique<AfeWakeWord>();

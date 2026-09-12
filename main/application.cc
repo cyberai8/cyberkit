@@ -402,8 +402,11 @@ void Application::ToggleChatState()
         Schedule([this]()
                  {
             if (!protocol_->IsAudioChannelOpened()) {
+                // Free WakeNet before TLS/MQTT work; AES needs contiguous internal RAM.
+                audio_service_.ReleaseWakeWordAfe();
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    audio_service_.EnableWakeWordDetection(true);
                     return;
                 }
             }
@@ -447,8 +450,10 @@ void Application::StartListening()
         Schedule([this]()
                  {
             if (!protocol_->IsAudioChannelOpened()) {
+                audio_service_.ReleaseWakeWordAfe();
                 SetDeviceState(kDeviceStateConnecting);
                 if (!protocol_->OpenAudioChannel()) {
+                    audio_service_.EnableWakeWordDetection(true);
                     return;
                 }
             }
@@ -872,6 +877,7 @@ void Application::OnWakeWordDetected()
 
         if (!protocol_->IsAudioChannelOpened())
         {
+            audio_service_.ReleaseWakeWordAfe();
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel())
             {
@@ -1005,38 +1011,46 @@ void Application::SetDeviceState(DeviceState state)
         display->SetChatMessage("system", "");
         break;
     case kDeviceStateListening:
+    {
         display->SetStatus(Lang::Strings::LISTENING);
-        display->SetEmotion("neutral");
 
-        // Entering listening is also the protocol-level start signal. Send it
-        // even when the capture processor was left running by a prior audio
-        // configuration change.
+        // Publish listen-start while MQTT/TLS still has headroom. Creating the
+        // AEC AFE right before this publish starves socket/TLS buffers (errno=12).
         if (protocol_) {
             protocol_->SendStartListening(listening_mode_);
         }
-        
+
+        // Pause emote before AFE swap so palette/frame alloc does not race AFE.
+        if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
+            emote->PauseAnimationsForLvgl();
+        }
+
         // Make sure the audio processor is running
         if (!audio_service_.IsAudioProcessorRunning())
         {
-            // CRITICAL FIX: Ensure AEC is enabled before starting voice processing
             if (aec_mode_ == kAecOnDeviceSide) {
                 audio_service_.EnableDeviceAec(true);
             }
-            
-            // Match official xiaozhi dialogue flow: Start voice processing, then
-            // stop wake-word feeding. Both AFEs stay initialized (Start/Stop only).
+            // Mutual exclusion: releases WakeNet AFE, then builds voice AFE.
             audio_service_.EnableVoiceProcessing(true);
             audio_service_.EnableWakeWordDetection(false);
         }
+
+        display->SetEmotion("neutral");
         break;
+    }
     case kDeviceStateSpeaking:
         display->SetStatus(Lang::Strings::SPEAKING);
+        // Avoid emote frame/palette alloc racing MQTT AES decrypt under low SRAM.
+        if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
+            emote->PauseAnimationsForLvgl();
+        }
 
         if (listening_mode_ != kListeningModeRealtime)
         {
+            // Stop feeding only. Keep the voice AFE resident so listen→speak→listen
+            // does not rebuild AEC. Wake word returns on idle (AFE mutual exclusion).
             audio_service_.EnableVoiceProcessing(false);
-            // Only AFE wake word can be detected in speaking mode
-            audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
         }
         audio_service_.ResetDecoder();
         break;
@@ -1132,6 +1146,7 @@ void Application::WakeWordInvoke(const std::string &wake_word)
 
         if (!protocol_->IsAudioChannelOpened())
         {
+            audio_service_.ReleaseWakeWordAfe();
             SetDeviceState(kDeviceStateConnecting);
             if (!protocol_->OpenAudioChannel())
             {

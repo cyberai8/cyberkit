@@ -12,6 +12,7 @@
 
 // ESP-IDF headers
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_timer.h>
 #include <esp_lv_adapter.h>
@@ -263,14 +264,25 @@ namespace emote
             return;
         }
 
+        // ESP32-S3 SPI GDMA cannot access PSRAM. Keep a short INTERNAL DMA strip
+        // so panel_io never allocates a bounce buffer; height=2 saves ~1.4KB vs 4.
+        const size_t buf_pixels = static_cast<size_t>(width * 2);
+        const size_t buf_bytes = buf_pixels * sizeof(uint16_t);
+        auto *dma_buf = static_cast<uint16_t *>(
+            heap_caps_aligned_alloc(64, buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (dma_buf == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate %u-byte internal DMA flush buffer",
+                     static_cast<unsigned>(buf_bytes));
+            return;
+        }
+        ESP_LOGI(TAG, "Emote flush buffer: %u bytes INTERNAL DMA",
+                 static_cast<unsigned>(buf_bytes));
+
         gfx_core_config_t gfx_cfg = {
             .flush_cb = EmoteEngine::OnFlush,
             .user_data = panel,
             .flags = {
                 .swap = true,
-                // LCD SPI DMA must be fed from a stable DMA-capable buffer.
-                // A single 8-line buffer also avoids filling the SPI queue
-                // with many tiny transfers while preserving the 30 FPS target.
                 .double_buffer = false,
                 .buff_dma = true,
                 .buff_spiram = false,
@@ -279,13 +291,13 @@ namespace emote
             .v_res = static_cast<uint32_t>(height),
             .fps = 30,
             .buffers = {
-                .buf1 = nullptr,
+                .buf1 = dma_buf,
                 .buf2 = nullptr,
-                .buf_pixels = static_cast<size_t>(width * 8),
+                .buf_pixels = buf_pixels,
             },
             .task = GFX_EMOTE_INIT_CONFIG()};
 
-        gfx_cfg.task.task_stack_caps = MALLOC_CAP_DEFAULT;
+        gfx_cfg.task.task_stack_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
         // Keep the graphics renderer off CPU0, where WiFi/LwIP and the main task run.
         gfx_cfg.task.task_affinity = 1;
         gfx_cfg.task.task_priority = 4;

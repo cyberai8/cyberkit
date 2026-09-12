@@ -10,6 +10,7 @@
 #include <sstream>
 
 #define DETECTION_RUNNING_EVENT 1
+#define OPUS_PACKET_READY_EVENT 2
 #define TAG "AfeWakeWord"
 
 AfeWakeWord::AfeWakeWord()
@@ -82,12 +83,14 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     }
 
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), models_,
-                                                AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+                                                AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (afe_config == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate WakeNet AFE config");
         return false;
     }
-    afe_config->aec_init = codec_->input_reference();
+    // Keep WakeNet lean: AEC is created by the voice processor when listening.
+    // Enabling AEC here burns internal SRAM and starves LCD SPI DMA.
+    afe_config->aec_init = false;
     afe_config->aec_mode = AEC_MODE_SR_HIGH_PERF;
     afe_config->vad_mode = VAD_MODE_3;
     afe_config->vad_min_noise_ms = 64;
@@ -374,7 +377,7 @@ void AfeWakeWord::EncodeWakeWordData() {
             encoder->Encode(std::move(pcm), [self](std::vector<uint8_t>&& opus) {
                 std::lock_guard<std::mutex> lock(self->wake_word_mutex_);
                 self->wake_word_opus_.emplace_back(std::move(opus));
-                self->wake_word_cv_.notify_all();
+                xEventGroupSetBits(self->event_group_, OPUS_PACKET_READY_EVENT);
             });
             ++packets;
         }
@@ -385,7 +388,7 @@ void AfeWakeWord::EncodeWakeWordData() {
         {
             std::lock_guard<std::mutex> lock(self->wake_word_mutex_);
             self->wake_word_opus_.emplace_back();
-            self->wake_word_cv_.notify_all();
+            xEventGroupSetBits(self->event_group_, OPUS_PACKET_READY_EVENT);
         }
         vTaskDelete(nullptr);
     }, "encode_wake_word", stack_size, this, 2,
@@ -393,9 +396,16 @@ void AfeWakeWord::EncodeWakeWordData() {
 }
 
 bool AfeWakeWord::GetWakeWordOpus(std::vector<uint8_t>& opus) {
-    std::unique_lock<std::mutex> lock(wake_word_mutex_);
-    wake_word_cv_.wait(lock, [this]() { return !wake_word_opus_.empty(); });
-    opus.swap(wake_word_opus_.front());
-    wake_word_opus_.pop_front();
-    return !opus.empty();
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(wake_word_mutex_);
+            if (!wake_word_opus_.empty()) {
+                opus.swap(wake_word_opus_.front());
+                wake_word_opus_.pop_front();
+                return !opus.empty();
+            }
+        }
+        xEventGroupWaitBits(event_group_, OPUS_PACKET_READY_EVENT,
+                            pdTRUE, pdFALSE, portMAX_DELAY);
+    }
 }

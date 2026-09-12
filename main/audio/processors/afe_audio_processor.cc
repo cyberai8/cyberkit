@@ -9,6 +9,28 @@
 AfeAudioProcessor::AfeAudioProcessor()
     : afe_data_(nullptr) {
     event_group_ = xEventGroupCreate();
+    // Create the fetch task early while internal SRAM is still available.
+    // xTaskCreateWithCaps still needs a small internal TCB; after WakeNet+WiFi
+    // that allocation often fails (minimal free block < 100 bytes).
+#if CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    const BaseType_t task_result = xTaskCreateWithCaps([](void* arg) {
+        auto* self = static_cast<AfeAudioProcessor*>(arg);
+        self->AudioProcessorTask();
+        vTaskDeleteWithCaps(nullptr);
+    }, "audio_communication", 4096, this, 3, nullptr,
+       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    const BaseType_t task_result = xTaskCreate([](void* arg) {
+        auto* self = static_cast<AfeAudioProcessor*>(arg);
+        self->AudioProcessorTask();
+        vTaskDelete(nullptr);
+    }, "audio_communication", 4096, this, 3, nullptr);
+#endif
+    if (task_result == pdPASS) {
+        task_created_ = true;
+    } else {
+        ESP_LOGW(TAG, "Deferred audio communication task create (no mem yet)");
+    }
 }
 
 AfeAudioProcessor::~AfeAudioProcessor() {
@@ -49,12 +71,12 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms,
         esp_srmodel_filter(models, ESP_VADN_PREFIX, nullptr);
 
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), nullptr,
-                                                AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
+                                                AFE_TYPE_VC, AFE_MODE_LOW_COST);
     if (afe_config == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate AFE config for %s", input_format.c_str());
         return;
     }
-    afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
+    afe_config->aec_mode = AEC_MODE_VOIP_LOW_COST;
     afe_config->vad_mode = VAD_MODE_0;
     afe_config->vad_min_noise_ms = 100;
     if (vad_model_name != nullptr) {

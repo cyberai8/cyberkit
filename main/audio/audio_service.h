@@ -102,6 +102,10 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
+    /** Drop WakeNet AFE so listening AEC AFE can fit in internal SRAM. */
+    void ReleaseWakeWordAfe();
+    /** Drop voice-processor AFE when returning to idle wake-word mode. */
+    void ReleaseAudioProcessorAfe();
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 

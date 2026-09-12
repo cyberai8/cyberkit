@@ -220,12 +220,15 @@ void EspS3Cat::InitializeI2c()
 
 void EspS3Cat::InitializeSpi()
 {
+    // ESP32-S3 SPI GDMA cannot read PSRAM (access_ext_mem=false); any non-DMA
+    // source forces an internal bounce of up to max_transfer_sz. Match the
+    // LVGL strip height (4 lines) so a bounce, if it ever happens, stays small.
     const spi_bus_config_t bus_config = TAIJIPI_ST77916_PANEL_BUS_QSPI_CONFIG(QSPI_PIN_NUM_LCD_PCLK,
                                                                               QSPI_PIN_NUM_LCD_DATA0,
                                                                               QSPI_PIN_NUM_LCD_DATA1,
                                                                               QSPI_PIN_NUM_LCD_DATA2,
                                                                               QSPI_PIN_NUM_LCD_DATA3,
-                                                                              DISPLAY_WIDTH * 8 * sizeof(uint16_t),
+                                                                              DISPLAY_WIDTH * 4 * sizeof(uint16_t),
                                                                               static_cast<esp_intr_cpu_affinity_t>(LCD_CORE)
                                                                             );
     ESP_ERROR_CHECK(spi_bus_initialize(QSPI_LCD_HOST, &bus_config, SPI_DMA_CH_AUTO));
@@ -259,14 +262,18 @@ void start_lvgl(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel
     adapter_config.stack_in_psram = true;
     ESP_ERROR_CHECK(esp_lv_adapter_init(&adapter_config));
 
-    esp_lv_adapter_display_config_t display_config = ESP_LV_ADAPTER_DISPLAY_SPI_WITH_PSRAM_DEFAULT_CONFIG(
+    // SPI on ESP32-S3 cannot DMA from PSRAM, so a PSRAM draw buffer forces a
+    // per-flush internal bounce. After WakeNet loads, free internal DRAM is
+    // too fragmented (minimal ~hundreds of bytes) and every blit fails with
+    // ESP_ERR_NO_MEM. Allocate a short INTERNAL DMA strip once at boot instead.
+    esp_lv_adapter_display_config_t display_config = ESP_LV_ADAPTER_DISPLAY_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
                                                          panel,
                                                          panel_io,
                                                          static_cast<uint16_t>(width),
                                                          static_cast<uint16_t>(height),
                                                          ESP_LV_ADAPTER_ROTATE_0);
-    display_config.profile.use_psram = true;
-    display_config.profile.buffer_height = 20;
+    display_config.profile.use_psram = false;
+    display_config.profile.buffer_height = 4;
     display_config.profile.require_double_buffer = false;
 
     lv_display_t *display_ = esp_lv_adapter_register_display(&display_config);
@@ -296,13 +303,13 @@ void EspS3Cat::Initializest77916Display(uint8_t pcb_verison)
 
     (void)pcb_verison;
 
-    // Ported from esp-vocat: lower QSPI clock + deeper queue for stability under load.
+    // Shallow queue: SPI bounce (if any) is per in-flight transaction.
     const esp_lcd_panel_io_spi_config_t io_config = {
         .cs_gpio_num        = QSPI_PIN_NUM_LCD_CS,
         .dc_gpio_num        = -1,
         .spi_mode           = 0,
         .pclk_hz            = 12 * 1000 * 1000,
-        .trans_queue_depth  = 8,
+        .trans_queue_depth  = 2,
         .on_color_trans_done = nullptr,
         .user_ctx           = nullptr,
         .lcd_cmd_bits       = 32,
