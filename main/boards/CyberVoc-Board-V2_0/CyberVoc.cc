@@ -225,9 +225,9 @@ void EspS3Cat::InitializeSpi()
                                                                               QSPI_PIN_NUM_LCD_DATA1,
                                                                               QSPI_PIN_NUM_LCD_DATA2,
                                                                               QSPI_PIN_NUM_LCD_DATA3,
-                                                                              DISPLAY_WIDTH * 1 * sizeof(uint16_t),
+                                                                              DISPLAY_WIDTH * 8 * sizeof(uint16_t),
                                                                               static_cast<esp_intr_cpu_affinity_t>(LCD_CORE)
-                                                                            );//DISPLAY_WIDTH * 8 * sizeof(uint16_t)
+                                                                            );
     ESP_ERROR_CHECK(spi_bus_initialize(QSPI_LCD_HOST, &bus_config, SPI_DMA_CH_AUTO));
 }
 
@@ -302,7 +302,7 @@ void EspS3Cat::Initializest77916Display(uint8_t pcb_verison)
         .dc_gpio_num        = -1,
         .spi_mode           = 0,
         .pclk_hz            = 12 * 1000 * 1000,
-        .trans_queue_depth  = 16,
+        .trans_queue_depth  = 8,
         .on_color_trans_done = nullptr,
         .user_ctx           = nullptr,
         .lcd_cmd_bits       = 32,
@@ -1030,8 +1030,25 @@ void EspS3Cat::SetAudioDataProcessedCallback(std::function<void(const int16_t* a
 
 void EspS3Cat::SetAudioAnalysisMode(AudioAnalysisMode mode)
 {
-    if (audio_analysis_ != nullptr) {
+    if (audio_analysis_ == nullptr) {
+        return;
+    }
+
+    auto& audio_service = Application::GetInstance().GetAudioService();
+    if (mode == AudioAnalysisMode::DOA_FOLLOW) {
+        // Switch hardware + AFE first. This prevents AudioAnalysis from seeing
+        // an MR frame as if it were two microphones.
+        if (!audio_service.ReconfigureCaptureProfile(true)) {
+            ESP_LOGE(TAG, "Cannot enable DOA: dual-mic capture profile switch failed");
+            return;
+        }
         audio_analysis_->SetMode(mode);
+    } else {
+        // Stop consuming DOA frames before returning to mic+reference capture.
+        audio_analysis_->SetMode(mode);
+        if (!audio_service.ReconfigureCaptureProfile(false)) {
+            ESP_LOGE(TAG, "Failed to restore mic+reference capture profile");
+        }
     }
 }
 

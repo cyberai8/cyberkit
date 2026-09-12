@@ -76,17 +76,14 @@ void PowerSaveTimer::PowerSaveCheck() {
             }
 
             if (cpu_max_freq_ != -1) {
-                // Disable wake word detection
+                // Disable wake word detection. Leave the codec input alone:
+                // closing duplex I2S after AFE init often cannot reallocate DMA
+                // and esp_codec_dev crashes in set_drv_fs.
                 auto& audio_service = app.GetAudioService();
                 is_wake_word_running_ = audio_service.IsWakeWordRunning();
                 if (is_wake_word_running_) {
                     audio_service.EnableWakeWordDetection(false);
                     vTaskDelay(pdMS_TO_TICKS(100));
-                }
-                // Disable audio input
-                auto codec = Board::GetInstance().GetAudioCodec();
-                if (codec) {
-                    codec->EnableInput(false);
                 }
 
                 esp_pm_config_t pm_config = {

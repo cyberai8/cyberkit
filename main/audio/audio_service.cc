@@ -4,6 +4,10 @@
 #include <esp_log.h>
 #include <cstring>
 
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+#include "codecs/box_audio_codec.h"
+#endif
+
 #if CONFIG_USE_AUDIO_PROCESSOR
 #include "processors/afe_audio_processor.h"
 #else
@@ -505,6 +509,43 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
     return nullptr;
 }
 
+void AudioService::EnsureCaptureInputReady() {
+    // Duplex I2S reopens TX when only RX is enabled. That DMA must be claimed
+    // before WakeNet/AFE eats the remaining internal SRAM; otherwise
+    // esp_codec_dev's set_drv_fs null-derefs on allocate failure.
+    last_input_time_ = std::chrono::steady_clock::now();
+    if (codec_ == nullptr || codec_->input_enabled()) {
+        return;
+    }
+
+    // If AFE already holds internal SRAM, free it before reclaiming I2S DMA
+    // (e.g. power-save closed the codec while WakeNet stayed initialized).
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    if (wake_word_initialized_) {
+        if (auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get())) {
+            if (afe_wake_word->Deinitialize()) {
+                wake_word_initialized_ = false;
+                ESP_LOGW(TAG, "Released WakeNet AFE to reclaim I2S DMA");
+            }
+        }
+    }
+#endif
+#if CONFIG_USE_AUDIO_PROCESSOR
+    if (audio_processor_initialized_) {
+        if (auto* afe_processor = dynamic_cast<AfeAudioProcessor*>(audio_processor_.get())) {
+            if (afe_processor->Deinitialize()) {
+                audio_processor_initialized_ = false;
+                ESP_LOGW(TAG, "Released audio-processor AFE to reclaim I2S DMA");
+            }
+        }
+    }
+#endif
+
+    esp_timer_stop(audio_power_timer_);
+    esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+    codec_->EnableInput(true);
+}
+
 void AudioService::EnableWakeWordDetection(bool enable) {
     if (!wake_word_) {
         return;
@@ -512,6 +553,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 
     ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
     if (enable) {
+        EnsureCaptureInputReady();
         if (!wake_word_initialized_) {
             if (!wake_word_->Initialize(codec_, models_list_)) {
                 ESP_LOGE(TAG, "Failed to initialize wake word");
@@ -530,6 +572,7 @@ void AudioService::EnableWakeWordDetection(bool enable) {
 void AudioService::EnableVoiceProcessing(bool enable) {
     ESP_LOGD(TAG, "%s voice processing", enable ? "Enabling" : "Disabling");
     if (enable) {
+        EnsureCaptureInputReady();
         if (!audio_processor_initialized_) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
             audio_processor_initialized_ = true;
@@ -549,6 +592,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
 void AudioService::EnableAudioTesting(bool enable) {
     ESP_LOGI(TAG, "%s audio testing", enable ? "Enabling" : "Disabling");
     if (enable) {
+        EnsureCaptureInputReady();
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
     } else {
         xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
@@ -561,11 +605,12 @@ void AudioService::EnableAudioTesting(bool enable) {
 
 void AudioService::EnableDeviceAec(bool enable) {
     ESP_LOGI(TAG, "%s device AEC", enable ? "Enabling" : "Disabling");
-    if (!audio_processor_initialized_) {
-        audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
-        audio_processor_initialized_ = true;
+    if (audio_processor_ == nullptr) {
+        ESP_LOGW(TAG, "Cannot change device AEC: audio processor is unavailable");
+        return;
     }
-
+    // AfeAudioProcessor remembers the requested state even before Initialize().
+    // Avoid allocating a second AFE while idle just to persist an AEC toggle.
     audio_processor_->EnableDeviceAec(enable);
 }
 
@@ -707,7 +752,17 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     auto now = std::chrono::steady_clock::now();
     auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
     auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
-    if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
+
+    // Keep I2S RX (+ paired TX DMA) alive while a capture pipeline is armed.
+    // Closing after AFE init often leaves too little contiguous internal RAM to
+    // reopen duplex DMA; esp_codec_dev then crashes in set_drv_fs.
+    const EventBits_t capture_bits = xEventGroupGetBits(event_group_) &
+        (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING |
+         AS_EVENT_AUDIO_TESTING_RUNNING);
+    const bool keep_input =
+        wake_word_initialized_ || audio_processor_initialized_ || capture_bits != 0;
+
+    if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled() && !keep_input) {
         codec_->EnableInput(false);
     }
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
@@ -818,6 +873,113 @@ void AudioService::SetAudioDataProcessedCallback(std::function<void(const int16_
     callbacks_.on_audio_data_processed = callback;
     ESP_LOGI(TAG, "Audio data processed callback registered");
 }
+
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+bool AudioService::ReconfigureCaptureProfile(bool doa_capture) {
+    std::lock_guard<std::mutex> profile_lock(capture_profile_mutex_);
+    if (codec_ == nullptr || audio_processor_ == nullptr) {
+        ESP_LOGW(TAG, "Capture profile switch deferred: audio pipeline is not ready");
+        return false;
+    }
+
+    auto* box_codec = dynamic_cast<BoxAudioCodec*>(codec_);
+    if (box_codec == nullptr) {
+        ESP_LOGE(TAG, "Capture profile switch requires BoxAudioCodec");
+        return false;
+    }
+    if (box_codec->doa_capture_mode() == doa_capture &&
+        codec_->input_reference() == !doa_capture && codec_->input_channels() == 2) {
+        return true;
+    }
+
+    const bool wake_was_running = IsWakeWordRunning();
+    const bool voice_was_running = IsAudioProcessorRunning();
+    const bool testing_was_running =
+        (xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_TESTING_RUNNING) != 0;
+
+    // DOA and AEC are mutually exclusive: both input channels must remain
+    // physical microphones for the complete DOA session.
+    if (doa_capture && audio_processor_initialized_) {
+        audio_processor_->EnableDeviceAec(false);
+    }
+    EnableWakeWordDetection(false);
+    EnableVoiceProcessing(false);
+    xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
+    vTaskDelay(pdMS_TO_TICKS(60));
+
+    bool wake_deinitialized = true;
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    if (auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get())) {
+        wake_deinitialized = afe_wake_word->Deinitialize();
+        if (wake_deinitialized) {
+            wake_word_initialized_ = false;
+        }
+    }
+#endif
+
+    bool processor_deinitialized = true;
+#if CONFIG_USE_AUDIO_PROCESSOR
+    if (auto* afe_processor = dynamic_cast<AfeAudioProcessor*>(audio_processor_.get())) {
+        processor_deinitialized = afe_processor->Deinitialize();
+        if (processor_deinitialized) {
+            audio_processor_initialized_ = false;
+        }
+    }
+#endif
+
+    if (!wake_deinitialized || !processor_deinitialized) {
+        ESP_LOGE(TAG, "Capture profile switch aborted because an AFE fetch is still active");
+        if (voice_was_running) {
+            EnableVoiceProcessing(true);
+        }
+        if (wake_was_running) {
+            EnableWakeWordDetection(true);
+        }
+        if (testing_was_running) {
+            xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
+        }
+        return false;
+    }
+
+    if (!box_codec->SetDoaCaptureMode(doa_capture)) {
+        ESP_LOGE(TAG, "Failed to switch capture profile to %s",
+                 doa_capture ? "DOA dual-mic" : "AEC mic+ref");
+        if (voice_was_running) {
+            EnableVoiceProcessing(true);
+        }
+        if (wake_was_running) {
+            EnableWakeWordDetection(true);
+        }
+        if (testing_was_running) {
+            xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
+        }
+        return false;
+    }
+
+    voice_detected_ = false;
+
+    // OpusResampler has no separate reset API; Configure reinitializes its
+    // filter history without changing rates or channel count.
+    if (codec_->input_sample_rate() != 16000) {
+        input_resampler_.Configure(codec_->input_sample_rate(), 16000);
+        reference_resampler_.Configure(codec_->input_sample_rate(), 16000);
+    }
+
+    ESP_LOGI(TAG, "Audio capture profile switched to %s",
+             doa_capture ? "DOA dual-mic (MM)" : "AEC mic+ref (MR)");
+
+    if (voice_was_running) {
+        EnableVoiceProcessing(true);
+    }
+    if (wake_was_running) {
+        EnableWakeWordDetection(true);
+    }
+    if (testing_was_running) {
+        xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING);
+    }
+    return true;
+}
+#endif
 
 
 void AudioService::UpdateOutputTimestamp() {

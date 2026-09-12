@@ -246,6 +246,13 @@ idf_component_register(SRCS ${SOURCES}
                     WHOLE_ARCHIVE
                     )
 
+# The APA DOA component is a local prebuilt library. Add it directly to main
+# so the legacy component dependency graph remains unchanged.
+target_include_directories(${COMPONENT_LIB} PRIVATE
+                           "${PROJECT_DIR}/components/esp_apa_doa/include")
+target_link_libraries(${COMPONENT_LIB} PRIVATE
+                      "${PROJECT_DIR}/components/esp_apa_doa/lib/${IDF_TARGET}/libesp_apa_doa.a")
+
 # Use target_compile_definitions to define BOARD_TYPE, BOARD_NAME
 # If BOARD_NAME is empty, use BOARD_TYPE
 if(NOT BOARD_NAME)

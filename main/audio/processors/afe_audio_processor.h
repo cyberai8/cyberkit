@@ -8,7 +8,10 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <functional>
+#include <atomic>
+#include <mutex>
 
 #include "audio_processor.h"
 #include "audio_codec.h"
@@ -22,6 +25,8 @@ public:
     void Feed(std::vector<int16_t>&& data) override;
     void Start() override;
     void Stop() override;
+    /** Release the current AFE instance. Initialize() can rebuild it for a new input profile. */
+    bool Deinitialize();
     bool IsRunning() override;
     void OnOutput(std::function<void(std::vector<int16_t>&& data)> callback) override;
     void OnVadStateChange(std::function<void(bool speaking)> callback) override;
@@ -36,16 +41,24 @@ private:
     std::function<void(bool speaking)> vad_state_change_callback_;
     AudioCodec* codec_ = nullptr;
     int frame_samples_ = 0;
-    bool is_speaking_ = false;
-    std::vector<int16_t> output_buffer_;
-
-    void AudioProcessorTask();
-
-    // Store initialization parameters for re-initialization
     int frame_duration_ms_ = 0;
     srmodel_list_t* models_list_ = nullptr;
-    bool aec_enabled_ = false;
+    bool is_speaking_ = false;
+    std::mutex afe_data_mutex_;
+    std::mutex state_mutex_;
+    std::deque<int16_t> output_buffer_;
+    std::atomic<int> active_fetch_count_{0};
+    bool task_created_ = false;
+    std::atomic<bool> aec_enabled_{false};
+    bool afe_aec_available_ = false;
+    bool afe_aec_enabled_ = false;
+    std::atomic<bool> afe_control_dirty_{false};
+    bool startup_stabilizing_ = false;
+    int startup_frame_count_ = 0;
 
+    void AudioProcessorTask();
+    bool WaitForFetchIdle(TickType_t timeout_ticks);
+    void ApplyAfeControlsLocked();
 };
 
 #endif // AFE_AUDIO_PROCESSOR_H

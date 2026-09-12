@@ -12,6 +12,7 @@
 #include <freertos/event_groups.h>
 #include <esp_timer.h>
 #include <model_path.h>
+#include <sdkconfig.h>
 
 #include <opus_encoder.h>
 #include <opus_decoder.h>
@@ -113,6 +114,10 @@ public:
     void SetAfeDataProcessedCallback(std::function<void(const int16_t* audio_data, size_t total_bytes)> callback);
     void SetVadStateChangeCallback(std::function<void(bool speaking)> callback);
     void SetAudioDataProcessedCallback(std::function<void(const int16_t* audio_data, size_t bytes_per_channel, size_t channels)> callback);
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+    /** Switch ES7210 and rebuild AFE between MR (AEC) and MM (dual-mic DOA). */
+    bool ReconfigureCaptureProfile(bool doa_capture);
+#endif
 
     void UpdateOutputTimestamp();
 private:
@@ -136,6 +141,7 @@ private:
     TaskHandle_t audio_output_task_handle_ = nullptr;
     TaskHandle_t opus_codec_task_handle_ = nullptr;
     std::mutex audio_queue_mutex_;
+    std::mutex capture_profile_mutex_;
     std::condition_variable audio_queue_cv_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_decode_queue_;
     std::deque<std::unique_ptr<AudioStreamPacket>> audio_send_queue_;
@@ -162,6 +168,8 @@ private:
     bool TryPushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
     void CheckAndUpdateAudioPowerState();
+    // Claim I2S DMA before AFE allocates the remaining internal SRAM.
+    void EnsureCaptureInputReady();
 };
 
 #endif

@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 
@@ -31,6 +32,8 @@ public:
     void OnAfeDataProcessed(std::function<void(const int16_t* audio_data, size_t total_bytes)> callback);
     void Start();
     void Stop();
+    /** Release the AFE instance so Initialize() can rebuild it for MM/MR input. */
+    bool Deinitialize();
     size_t GetFeedSize();
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
@@ -46,6 +49,7 @@ private:
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
     std::function<void(bool speaking)> vad_state_change_callback_;
     std::function<void(const int16_t* audio_data, size_t total_bytes)> afe_data_callback_;
+    std::mutex callback_mutex_;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
     bool is_speaking_ = false;
@@ -57,9 +61,13 @@ private:
     std::deque<std::vector<uint8_t>> wake_word_opus_;
     std::mutex wake_word_mutex_;
     std::condition_variable wake_word_cv_;
+    std::mutex afe_data_mutex_;
+    std::atomic<int> active_fetch_count_{0};
+    bool detection_task_created_ = false;
 
     void StoreWakeWordData(const int16_t* data, size_t size);
     void AudioDetectionTask();
+    bool WaitForFetchIdle(TickType_t timeout_ticks);
 };
 
 #endif

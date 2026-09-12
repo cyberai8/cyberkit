@@ -3,6 +3,9 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_tdm.h>
+#include <algorithm>
+#include <cinttypes>
+#include <limits>
 
 #define TAG "BoxAudioCodec"
 
@@ -10,13 +13,11 @@ BoxAudioCodec::BoxAudioCodec(void* i2c_master_handle, int input_sample_rate, int
     gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
     gpio_num_t pa_pin, uint8_t es8311_addr, uint8_t es7210_addr, bool input_reference) {
     duplex_ = true; // 是否双工
-#if 0
-    input_reference_ = input_reference; // 是否使用参考输入，实现回声消除
-    input_channels_ = input_reference_ ? 2 : 1; // 输入通道数
-#else
-    input_reference_ = true; // 是否使用参考输入，实现回声消除
-    input_channels_ = 2; // 输入通道数
-#endif
+    // CyberVoc normally captures microphone + playback reference. DOA switches
+    // this profile at runtime to two physical microphones.
+    (void)input_reference;
+    input_reference_ = true;
+    input_channels_ = 2;
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
     input_gain_ = 30;
@@ -192,53 +193,74 @@ void BoxAudioCodec::SetOutputVolume(int volume) {
     AudioCodec::SetOutputVolume(volume);
 }
 
-#if 0
-void BoxAudioCodec::EnableInput(bool enable) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
-    if (enable == input_enabled_) {
-        return;
+bool BoxAudioCodec::OpenInputDeviceLocked() {
+    if (input_enabled_) {
+        return true;
     }
-    if (enable) {
-        esp_codec_dev_sample_info_t fs = {
-            .bits_per_sample = 16,
-            .channel = 4,
-            .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0),
-            .sample_rate = (uint32_t)output_sample_rate_,
-            .mclk_multiple = 0,
-        };
-        if (input_reference_) {
-            fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
-        }
-        ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_channel_gain(input_dev_, ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0), input_gain_));
-    } else {
-        ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
+
+    esp_codec_dev_sample_info_t fs = {
+        .bits_per_sample = 16,
+        .channel = 4,
+        .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) |
+                        ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
+        .sample_rate = static_cast<uint32_t>(input_sample_rate_),
+        .mclk_multiple = 0,
+    };
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+    if (doa_capture_mode_) {
+        // esp_codec_dev otherwise compacts only slots 0/1. DOA must inspect all
+        // ES7210 slots because the two populated microphones vary by PCB wiring.
+        fs.channel_mask |= ESP_CODEC_DEV_MAKE_CHANNEL_MASK(2) |
+                           ESP_CODEC_DEV_MAKE_CHANNEL_MASK(3);
     }
-    AudioCodec::EnableInput(enable);
-}
-//delete reference channel
-#else
-void BoxAudioCodec::EnableInput(bool enable) {
-    std::lock_guard<std::mutex> lock(data_if_mutex_);
-    if (enable == input_enabled_) {
-        return;
-    }
-    if (enable) {
-        esp_codec_dev_sample_info_t fs = {
-            .bits_per_sample = 16,
-            .channel = 4,
-            .channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1),
-            .sample_rate = (uint32_t)output_sample_rate_,
-            .mclk_multiple = 0,
-        };
-        ESP_ERROR_CHECK(esp_codec_dev_open(input_dev_, &fs));
-        ESP_ERROR_CHECK(esp_codec_dev_set_in_gain(input_dev_, input_gain_));
-    } else {
-        ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
-    }
-    AudioCodec::EnableInput(enable);
-}
 #endif
+
+    esp_err_t ret = esp_codec_dev_open(input_dev_, &fs);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open input device: %s", esp_err_to_name(ret));
+        return false;
+    }
+    ret = esp_codec_dev_set_in_gain(input_dev_, input_gain_);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set input gain: %s", esp_err_to_name(ret));
+        esp_codec_dev_close(input_dev_);
+        return false;
+    }
+
+    AudioCodec::EnableInput(true);
+    ESP_LOGI(TAG, "Input opened: mask=0x%x, rate=%" PRIu32 ", profile=%s",
+             fs.channel_mask, fs.sample_rate,
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+             doa_capture_mode_ ? "DOA dual-mic" : "AEC mic+ref"
+#else
+             "mic+ref"
+#endif
+    );
+    return true;
+}
+
+void BoxAudioCodec::CloseInputDeviceLocked() {
+    if (!input_enabled_) {
+        return;
+    }
+    const esp_err_t ret = esp_codec_dev_close(input_dev_);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to close input device: %s", esp_err_to_name(ret));
+    }
+    AudioCodec::EnableInput(false);
+}
+
+void BoxAudioCodec::EnableInput(bool enable) {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (enable == input_enabled_) {
+        return;
+    }
+    if (enable) {
+        OpenInputDeviceLocked();
+    } else {
+        CloseInputDeviceLocked();
+    }
+}
 
 void BoxAudioCodec::EnableOutput(bool enable) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
@@ -263,11 +285,152 @@ void BoxAudioCodec::EnableOutput(bool enable) {
 }
 
 int BoxAudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (!input_enabled_ || input_dev_ == nullptr || dest == nullptr || samples <= 0) {
+        return 0;
+    }
+
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+    if (doa_capture_mode_) {
+        // Do not lock from idle ADC noise. A valid DOA utterance is already
+        // gated near -55 dBFS, for which average absolute PCM is well above 32.
+        constexpr uint64_t kMinAverageAbsForLock = 32;
+        constexpr uint8_t kStableReadsToLock = 3;
+
+        if ((samples % 2) != 0) {
+            ESP_LOGW(TAG, "DOA read requires packed stereo samples, got %d", samples);
+            return 0;
+        }
+        const size_t frames = static_cast<size_t>(samples / 2);
+        tdm_read_buffer_.resize(frames * 4);
+        const esp_err_t ret = esp_codec_dev_read(input_dev_, tdm_read_buffer_.data(),
+                                                  tdm_read_buffer_.size() * sizeof(int16_t));
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "DOA TDM read failed: %s", esp_err_to_name(ret));
+            return 0;
+        }
+
+        if (!tdm_slot_map_ready_) {
+            std::array<uint64_t, 4> energy = {0, 0, 0, 0};
+            for (size_t frame = 0; frame < frames; ++frame) {
+                for (size_t slot = 0; slot < energy.size(); ++slot) {
+                    const int32_t sample = tdm_read_buffer_[frame * 4 + slot];
+                    energy[slot] += static_cast<uint64_t>(sample >= 0 ? sample : -sample);
+                }
+            }
+            tdm_last_energy_ = energy;
+
+            uint8_t strongest = 0;
+            for (uint8_t slot = 1; slot < 4; ++slot) {
+                if (energy[slot] > energy[strongest]) {
+                    strongest = slot;
+                }
+            }
+            uint8_t second = strongest == 0 ? 1 : 0;
+            for (uint8_t slot = 0; slot < 4; ++slot) {
+                if (slot != strongest && energy[slot] > energy[second]) {
+                    second = slot;
+                }
+            }
+
+            // Keep channel order deterministic. Swapping the pair according to
+            // the louder side would mirror the reported angle between utterances.
+            const uint8_t candidate0 = std::min(strongest, second);
+            const uint8_t candidate1 = std::max(strongest, second);
+            if (candidate0 == tdm_candidate_slot0_ && candidate1 == tdm_candidate_slot1_) {
+                if (tdm_candidate_stable_reads_ < std::numeric_limits<uint8_t>::max()) {
+                    ++tdm_candidate_stable_reads_;
+                }
+            } else {
+                tdm_candidate_slot0_ = candidate0;
+                tdm_candidate_slot1_ = candidate1;
+                tdm_candidate_stable_reads_ = 1;
+            }
+            tdm_slot0_ = candidate0;
+            tdm_slot1_ = candidate1;
+
+            const uint64_t second_average = frames == 0 ? 0 : energy[second] / frames;
+            if (second_average >= kMinAverageAbsForLock &&
+                tdm_candidate_stable_reads_ >= kStableReadsToLock) {
+                tdm_slot_map_ready_ = true;
+                ESP_LOGI(TAG,
+                         "TDM mic slots locked: %u/%u, avg_abs=%u/%u/%u/%u",
+                         static_cast<unsigned>(tdm_slot0_), static_cast<unsigned>(tdm_slot1_),
+                         static_cast<unsigned>(energy[0] / frames),
+                         static_cast<unsigned>(energy[1] / frames),
+                         static_cast<unsigned>(energy[2] / frames),
+                         static_cast<unsigned>(energy[3] / frames));
+            } else if ((++tdm_probe_log_counter_ % 20) == 1) {
+                ESP_LOGI(TAG,
+                         "TDM mic probe: candidate=%u/%u stable=%u avg_abs=%u/%u/%u/%u",
+                         static_cast<unsigned>(candidate0), static_cast<unsigned>(candidate1),
+                         static_cast<unsigned>(tdm_candidate_stable_reads_),
+                         static_cast<unsigned>(frames == 0 ? 0 : energy[0] / frames),
+                         static_cast<unsigned>(frames == 0 ? 0 : energy[1] / frames),
+                         static_cast<unsigned>(frames == 0 ? 0 : energy[2] / frames),
+                         static_cast<unsigned>(frames == 0 ? 0 : energy[3] / frames));
+            }
+        }
+
+        for (size_t frame = 0; frame < frames; ++frame) {
+            dest[frame * 2] = tdm_read_buffer_[frame * 4 + tdm_slot0_];
+            dest[frame * 2 + 1] = tdm_read_buffer_[frame * 4 + tdm_slot1_];
+        }
+        return samples;
+    }
+#endif
+
+    const esp_err_t ret = esp_codec_dev_read(input_dev_, dest,
+                                              static_cast<size_t>(samples) * sizeof(int16_t));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Input read failed: %s", esp_err_to_name(ret));
+        return 0;
     }
     return samples;
 }
+
+#if CONFIG_BOARD_TYPE_CYBERVOC_V2_0
+bool BoxAudioCodec::SetDoaCaptureMode(bool enable) {
+    std::lock_guard<std::mutex> lock(data_if_mutex_);
+    if (doa_capture_mode_ == enable && input_reference_ == !enable && input_channels_ == 2) {
+        return true;
+    }
+
+    const bool previous_mode = doa_capture_mode_;
+    const bool previous_reference = input_reference_;
+    const bool was_enabled = input_enabled_;
+    if (was_enabled) {
+        CloseInputDeviceLocked();
+    }
+
+    doa_capture_mode_ = enable;
+    input_reference_ = !enable;
+    input_channels_ = 2;
+    tdm_slot_map_ready_ = false;
+    tdm_slot0_ = 0;
+    tdm_slot1_ = 1;
+    tdm_candidate_slot0_ = 0;
+    tdm_candidate_slot1_ = 1;
+    tdm_candidate_stable_reads_ = 0;
+    tdm_probe_log_counter_ = 0;
+    tdm_last_energy_.fill(0);
+
+    ESP_LOGI(TAG, "Capture profile: %s (input_reference=%d, channels=%d)",
+             enable ? "DOA dual-mic" : "AEC mic+ref",
+             input_reference_ ? 1 : 0, input_channels_);
+
+    if (was_enabled && !OpenInputDeviceLocked()) {
+        ESP_LOGE(TAG, "Capture profile switch failed; restoring previous profile");
+        doa_capture_mode_ = previous_mode;
+        input_reference_ = previous_reference;
+        if (!OpenInputDeviceLocked()) {
+            ESP_LOGE(TAG, "Failed to restore previous input profile");
+        }
+        return false;
+    }
+    return true;
+}
+#endif
 
 int BoxAudioCodec::Write(const int16_t* data, int samples) {
     if (!output_enabled_) {

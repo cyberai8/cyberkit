@@ -1,0 +1,4 @@
+version: "1.0.1"
+description: Local ST77916 LCD driver with SPI error propagation fix
+targets:
+  - esp32s3

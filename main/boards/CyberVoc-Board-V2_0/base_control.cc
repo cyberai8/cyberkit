@@ -176,17 +176,22 @@ void BaseControl::HandleCommand(uint8_t cmd, uint8_t *data, int data_len)
 
             if (was_offline) {
                 ESP_LOGI(TAG, "Cyber base connected (reinserted)");
-                board_->SetAudioAnalysisMode(AudioAnalysisMode::DOA_FOLLOW);
                 auto &app = Application::GetInstance();
-                // The base uses its own audio analysis path. Only disable AEC
-                // when it is currently enabled; an already-disabled AEC must
-                // not trigger an unnecessary AFE reconfiguration.
-                if (app.GetAecMode() != kAecOff) {
-                    ESP_LOGI(TAG, "AEC is enabled, disabling it for base mode");
-                    app.SetAecMode(kAecOff);
-                } else {
-                    ESP_LOGI(TAG, "AEC is already disabled, no AEC change needed");
-                }
+                // Codec/AFE switching may wait for an in-flight audio fetch;
+                // execute it on the application task, never in the UART callback.
+                app.Schedule([this]() {
+                    if (!cyber_base_online_) {
+                        return;
+                    }
+                    auto& scheduled_app = Application::GetInstance();
+                    if (scheduled_app.GetAecMode() != kAecOff) {
+                        ESP_LOGI(TAG, "AEC is enabled, disabling it for base mode");
+                        scheduled_app.SetAecMode(kAecOff);
+                    } else {
+                        ESP_LOGI(TAG, "AEC is already disabled, no AEC change needed");
+                    }
+                    board_->SetAudioAnalysisMode(AudioAnalysisMode::DOA_FOLLOW);
+                });
                 emote_display->InsertAnimDialog("insert", 3000);
             }
             break;
@@ -222,8 +227,14 @@ void BaseControl::HeartbeatCheckTimerCallback(void* arg)
         ESP_LOGW(TAG, "Cyber base disconnected (timeout: %lld ms)", time_since_last_heartbeat);
         if(self->board_->GetAudioAnalysisMode() == AudioAnalysisMode::DOA_FOLLOW)
         {
-            self->board_->SetAudioAnalysisMode(AudioAnalysisMode::DISABLED);
-
+            // esp_timer callbacks must stay non-blocking. Restore the capture
+            // profile from the application task.
+            Application::GetInstance().Schedule([self]() {
+                if (!self->cyber_base_online_ &&
+                    self->board_->GetAudioAnalysisMode() == AudioAnalysisMode::DOA_FOLLOW) {
+                    self->board_->SetAudioAnalysisMode(AudioAnalysisMode::DISABLED);
+                }
+            });
         }
 
         // Do not enable AEC automatically when the base heartbeat is lost.

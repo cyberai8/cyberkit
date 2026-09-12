@@ -1,0 +1,4 @@
+version: "0.1.0"
+description: ESP APA sound-source localization engine
+targets:
+  - esp32s3

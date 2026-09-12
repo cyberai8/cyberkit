@@ -268,9 +268,12 @@ namespace emote
             .user_data = panel,
             .flags = {
                 .swap = true,
-                .double_buffer = true,
-                .buff_dma = false,
-                .buff_spiram = true,
+                // LCD SPI DMA must be fed from a stable DMA-capable buffer.
+                // A single 8-line buffer also avoids filling the SPI queue
+                // with many tiny transfers while preserving the 30 FPS target.
+                .double_buffer = false,
+                .buff_dma = true,
+                .buff_spiram = false,
             },
             .h_res = static_cast<uint32_t>(width),
             .v_res = static_cast<uint32_t>(height),
@@ -278,7 +281,7 @@ namespace emote
             .buffers = {
                 .buf1 = nullptr,
                 .buf2 = nullptr,
-                .buf_pixels = static_cast<size_t>(width * 16),
+                .buf_pixels = static_cast<size_t>(width * 8),
             },
             .task = GFX_EMOTE_INIT_CONFIG()};
 
@@ -583,9 +586,16 @@ namespace emote
             bool state = esp_lv_adapter_get_dummy_draw_enabled(disp);
             if (state)
             {
-                esp_lv_adapter_dummy_draw_blit(
+                esp_err_t ret = esp_lv_adapter_dummy_draw_blit(
                     disp, x_start, y_start, x_end, y_end, color_data, true);
-                // gfx_emote_flush_ready(handle, true);
+                if (ret != ESP_OK)
+                {
+                    // A failed SPI transfer has no completion callback.  The
+                    // driver now returns that error, so always release the
+                    // gfx flush wait below and let the next frame recover.
+                    ESP_LOGW(TAG, "Display flush dropped (%s) at [%d,%d]-[%d,%d]",
+                             esp_err_to_name(ret), x_start, y_start, x_end, y_end);
+                }
             }
         }
         gfx_emote_flush_ready(handle, true);
