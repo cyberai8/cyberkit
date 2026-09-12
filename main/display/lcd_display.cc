@@ -125,6 +125,29 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
 #endif
 
     ESP_LOGI(TAG, "Initializing LVGL adapter, width:%d, height:%d", width_, height_);
+#if CONFIG_BOARD_TYPE_CYBERVOC || CONFIG_BOARD_TYPE_CYBERVOC_V2_0 || \
+    CONFIG_BOARD_TYPE_CYBERVOC_EN || CONFIG_BOARD_TYPE_CYBERVOC_RU
+    // Match Emote path: ESP32-S3 QSPI cannot DMA from PSRAM. A tall draw buffer
+    // (or PSRAM+bounce) fragments internal DRAM and breaks I2S reopen for AFE.
+    esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    adapter_config.task_priority = 4;
+    adapter_config.task_core_id = 1;
+    adapter_config.tick_period_ms = 50;
+    adapter_config.task_min_delay_ms = 10;
+    adapter_config.task_max_delay_ms = 1000;
+    adapter_config.stack_in_psram = true;
+    ESP_ERROR_CHECK(esp_lv_adapter_init(&adapter_config));
+
+    esp_lv_adapter_display_config_t display_config = ESP_LV_ADAPTER_DISPLAY_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
+        panel_,
+        panel_io_,
+        static_cast<uint16_t>(width_),
+        static_cast<uint16_t>(height_),
+        ESP_LV_ADAPTER_ROTATE_0);
+    display_config.profile.use_psram = false;
+    display_config.profile.buffer_height = 2;
+    display_config.profile.require_double_buffer = false;
+#else
     const esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
     ESP_ERROR_CHECK(esp_lv_adapter_init(&adapter_config));
 
@@ -136,6 +159,7 @@ SpiLcdDisplay::SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_h
         ESP_LV_ADAPTER_ROTATE_0);
     display_config.profile.use_psram = false;
     display_config.profile.buffer_height = 20;
+#endif
 
     display_ = esp_lv_adapter_register_display(&display_config);
     if (display_ == nullptr) {

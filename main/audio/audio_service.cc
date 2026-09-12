@@ -541,6 +541,9 @@ void AudioService::EnsureCaptureInputReady() {
     esp_timer_stop(audio_power_timer_);
     esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
     codec_->EnableInput(true);
+    if (!codec_->input_enabled()) {
+        ESP_LOGE(TAG, "Capture input failed to open (internal DMA likely exhausted)");
+    }
 }
 
 void AudioService::ReleaseWakeWordAfe() {
@@ -820,11 +823,14 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     // Keep I2S RX (+ paired TX DMA) alive while a capture pipeline is armed.
     // Closing after AFE init often leaves too little contiguous internal RAM to
     // reopen duplex DMA; esp_codec_dev then crashes in set_drv_fs.
+    // Also keep RX if WakeNet was loaded but not started yet (OTA/activating
+    // can exceed AUDIO_POWER_TIMEOUT before idle EnableWakeWordDetection).
     const EventBits_t capture_bits = xEventGroupGetBits(event_group_) &
         (AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING |
          AS_EVENT_AUDIO_TESTING_RUNNING);
     const bool keep_input =
-        wake_word_initialized_ || audio_processor_initialized_ || capture_bits != 0;
+        wake_word_ != nullptr || wake_word_initialized_ ||
+        audio_processor_initialized_ || capture_bits != 0;
 
     if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled() && !keep_input) {
         codec_->EnableInput(false);

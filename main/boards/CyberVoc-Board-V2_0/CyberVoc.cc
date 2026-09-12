@@ -290,10 +290,8 @@ void start_lvgl(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel
     esp_lv_adapter_set_dummy_draw(display_, true);
     esp_lv_adapter_start();
 
-    esp_lv_adapter_lock(-1);
-    /* Pass the display pointer directly to avoid Board::GetInstance() call */
+    /* ui_bridge_init manages adapter locks internally; do not hold lock here. */
     ui_bridge_init(display);
-    esp_lv_adapter_unlock();
 }
 
 void EspS3Cat::Initializest77916Display(uint8_t pcb_verison)
@@ -347,8 +345,12 @@ void EspS3Cat::Initializest77916Display(uint8_t pcb_verison)
     display_ = new emote::EmoteDisplay(panel, panel_io, DISPLAY_WIDTH, DISPLAY_HEIGHT);
     start_lvgl(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY, display_);
 #else
+    // SpiLcdDisplay starts LVGL itself. Do not hold esp_lv_adapter_lock here:
+    // ui_bridge_init -> switch_page takes the same lock again and Default
+    // (non-dummy) flushes can block on it — classic boot deadlock.
     display_ = new SpiLcdDisplay(panel_io, panel,
                                  DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+    ui_bridge_init(display_);
 #endif
     backlight_ = new PwmBacklight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
     backlight_->RestoreBrightness();

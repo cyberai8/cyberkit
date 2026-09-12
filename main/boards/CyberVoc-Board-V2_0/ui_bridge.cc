@@ -705,8 +705,11 @@ void ui_bridge_init(Display *display)
     }
     else
     {
-        ESP_LOGI("UI_BRIDGE", "NVS write task created");
+        ESP_LOGI(TAG, "NVS write task created");
     }
+
+    ESP_LOGI(TAG, "Creating base container / pages...");
+
     /* Cache display pointer */
     if (display)
     {
@@ -717,7 +720,8 @@ void ui_bridge_init(Display *display)
         }
     }
 
-    /* Create base emote UI container */
+    /* Create base emote UI container (must not hold lock across switch_page). */
+    esp_lv_adapter_lock(-1);
     lv_obj_t *scr = lv_scr_act();
     s_base_container = lv_obj_create(scr);
     lv_obj_remove_style_all(s_base_container);
@@ -726,14 +730,19 @@ void ui_bridge_init(Display *display)
     lv_obj_set_style_bg_opa(s_base_container, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(s_base_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_base_container, LV_OBJ_FLAG_CLICKABLE);
+    esp_lv_adapter_unlock();
 
     /* Register base container as default page */
     ui_bridge_register_page(UI_BRIDGE_PAGE_HOME, &s_base_container);
+    ESP_LOGI(TAG, "Switching to home page...");
     ui_bridge_switch_page(UI_BRIDGE_PAGE_HOME); /* Set as default page */
-    lv_obj_add_event_cb(s_base_container, ui_bridge_base_container_event_cb, LV_EVENT_ALL, NULL);
 
+    esp_lv_adapter_lock(-1);
+    lv_obj_add_event_cb(s_base_container, ui_bridge_base_container_event_cb, LV_EVENT_ALL, NULL);
     /* Create main UI (which will register its own pages) */
+    ESP_LOGI(TAG, "Creating alarm UI...");
     alarm_create_ui();
+    esp_lv_adapter_unlock();
 
     ESP_LOGI(TAG, "LVGL display bridge initialized for %dx%d", DISPLAY_WIDTH, DISPLAY_HEIGHT);
 }
@@ -812,9 +821,11 @@ void ui_bridge_switch_page(const char *page_id)
         app.SwitchToIdle();
     }
 
-    /* Set dummy draw mode for home page */
+    /* Set dummy draw mode for home page — only when Emote owns the framebuffer.
+     * Default/Twemoji (LcdDisplay) must keep dummy_draw off or LVGL never paints. */
     lv_display_t *disp = lv_display_get_default();
-    bool enable_dummy = (strcmp(page_id, UI_BRIDGE_PAGE_HOME) == 0);
+    bool enable_dummy = (strcmp(page_id, UI_BRIDGE_PAGE_HOME) == 0) &&
+                        (s_cached_emote_display != nullptr);
 
     if (!enable_dummy && s_cached_emote_display != nullptr)
     {

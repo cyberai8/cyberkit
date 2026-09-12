@@ -256,7 +256,9 @@ void BoxAudioCodec::EnableInput(bool enable) {
         return;
     }
     if (enable) {
-        OpenInputDeviceLocked();
+        if (!OpenInputDeviceLocked()) {
+            ESP_LOGE(TAG, "EnableInput failed; leaving input disabled");
+        }
     } else {
         CloseInputDeviceLocked();
     }
