@@ -587,15 +587,11 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             }
             if (!wake_word_->Initialize(codec_, models_list_)) {
                 ESP_LOGE(TAG, "Failed to initialize wake word");
-                if (emote) {
-                    emote->ResumeAnimationsForEmote();
-                }
                 return;
             }
             wake_word_initialized_ = true;
-            if (emote) {
-                emote->ResumeAnimationsForEmote();
-            }
+            // Do not Resume here — idle path resumes only when largest internal
+            // block is healthy (avoids minimal-sram≈43 fragmentation).
         }
         if (wake_word_->GetFeedSize() == 0) {
             ESP_LOGE(TAG, "Wake word initialized without a usable feed size");

@@ -651,6 +651,12 @@ namespace emote
         {
             return;
         }
+
+        if (animations_suspended_)
+        {
+            // Chat session: keep icons/status lightweight; skip eye anim alloc.
+            return;
+        }
         
         if (!gfx_obj_get_visible(g_obj_anim_eye))
         {
@@ -703,7 +709,10 @@ namespace emote
         if (std::strcmp(status, Lang::Strings::LISTENING) == 0)
         {
             SetUIDisplayMode(UIDisplayMode::SHOW_LISTENING, this);
-            engine_->SetEyes("happy", true, 20, this);
+            if (!animations_suspended_)
+            {
+                engine_->SetEyes("happy", true, 20, this);
+            }
             engine_->SetIcon(ICON_MIC, this);
         }
         else if (std::strcmp(status, Lang::Strings::STANDBY) == 0)
@@ -1380,7 +1389,8 @@ namespace emote
         }
 
         DisplayLockGuard lock(this);
-        ESP_LOGI(TAG, "Pause emote animations for LVGL page");
+        animations_suspended_ = true;
+        ESP_LOGI(TAG, "Pause emote animations (SRAM guard)");
         if (g_obj_anim_eye)
         {
             gfx_anim_stop(g_obj_anim_eye);
@@ -1402,7 +1412,15 @@ namespace emote
             return;
         }
 
+        const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        if (largest < 4096) {
+            ESP_LOGW(TAG, "Skip emote resume: largest internal=%u",
+                     static_cast<unsigned>(largest));
+            return;
+        }
+
         DisplayLockGuard lock(this);
+        animations_suspended_ = false;
         ESP_LOGI(TAG, "Resume emote animations for home page");
         if (g_obj_anim_eye && gfx_obj_get_visible(g_obj_anim_eye))
         {

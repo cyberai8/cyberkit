@@ -956,12 +956,11 @@ void Application::SetDeviceState(DeviceState state)
     {
         display->UpdateStatusBar();
         display->SetStatus(Lang::Strings::STANDBY);
-        // display->SetEmotion("neutral");
-        //  if(board.GetAudioAnalysisMode() != AudioAnalysisMode::BEAT_DETECTION)
-        //  {
-        //      display->SetEmotion("neutral");
-        //  };
-        display->SetEmotion("neutral");
+        // Stop capture first; rebuild WakeNet before restarting emote anims so
+        // palette/SPI bounce do not fight AFE init (keeps largest-block healthier).
+        if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
+            emote->PauseAnimationsForLvgl();
+        }
         audio_service_.EnableVoiceProcessing(false);
         auto music = Board::GetInstance().GetMusic();
         bool music_play = music->MusicPlaying();
@@ -969,12 +968,11 @@ void Application::SetDeviceState(DeviceState state)
         if (!music_play)
         {
             display->SetStatus(Lang::Strings::STANDBY);
-            // if(board.GetAudioAnalysisMode() != AudioAnalysisMode::BEAT_DETECTION)
-            // {
-            //     display->SetEmotion("neutral");
-            // };
-            display->SetEmotion("neutral");
             audio_service_.EnableWakeWordDetection(true);
+            if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
+                emote->ResumeAnimationsForEmote();
+            }
+            display->SetEmotion("neutral");
         }
         else
         {
@@ -1003,26 +1001,24 @@ void Application::SetDeviceState(DeviceState state)
 
     case kDeviceStateConnecting:
         display->SetStatus(Lang::Strings::CONNECTING);
-        // if(board.GetAudioAnalysisMode() != AudioAnalysisMode::BEAT_DETECTION)
-        // {
-        //     display->SetEmotion("neutral");
-        // };
-        display->SetEmotion("neutral");
+        if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
+            emote->PauseAnimationsForLvgl();
+        }
         display->SetChatMessage("system", "");
         break;
     case kDeviceStateListening:
     {
+        // Suspend emote for the whole chat session so realtime barge-in keeps
+        // internal SRAM for AEC uplink + MQTT (avoid SetEyes palette alloc).
+        if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
+            emote->PauseAnimationsForLvgl();
+        }
         display->SetStatus(Lang::Strings::LISTENING);
 
         // Publish listen-start while MQTT/TLS still has headroom. Creating the
         // AEC AFE right before this publish starves socket/TLS buffers (errno=12).
         if (protocol_) {
             protocol_->SendStartListening(listening_mode_);
-        }
-
-        // Pause emote before AFE swap so palette/frame alloc does not race AFE.
-        if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
-            emote->PauseAnimationsForLvgl();
         }
 
         // Make sure the audio processor is running
@@ -1032,24 +1028,27 @@ void Application::SetDeviceState(DeviceState state)
                 audio_service_.EnableDeviceAec(true);
             }
             // Mutual exclusion: releases WakeNet AFE, then builds voice AFE.
+            // Keep this AFE resident across listen↔speak for realtime barge-in.
             audio_service_.EnableVoiceProcessing(true);
             audio_service_.EnableWakeWordDetection(false);
         }
-
-        display->SetEmotion("neutral");
         break;
     }
     case kDeviceStateSpeaking:
         display->SetStatus(Lang::Strings::SPEAKING);
-        // Avoid emote frame/palette alloc racing MQTT AES decrypt under low SRAM.
         if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
             emote->PauseAnimationsForLvgl();
         }
 
-        if (listening_mode_ != kListeningModeRealtime)
-        {
-            // Stop feeding only. Keep the voice AFE resident so listen→speak→listen
-            // does not rebuild AEC. Wake word returns on idle (AFE mutual exclusion).
+        if (listening_mode_ == kListeningModeRealtime) {
+            // Official realtime: keep mic uplink alive during TTS so the server
+            // can hear barge-in. Do not rebuild WakeNet here (would destroy AEC).
+            if (!audio_service_.IsAudioProcessorRunning()) {
+                audio_service_.EnableVoiceProcessing(true);
+            }
+            ESP_LOGI(TAG, "Realtime speaking: keep voice AFE uplink for barge-in");
+        } else {
+            // Non-realtime: stop feeding only; AFE instance stays until idle.
             audio_service_.EnableVoiceProcessing(false);
         }
         audio_service_.ResetDecoder();

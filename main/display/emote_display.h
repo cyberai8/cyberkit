@@ -96,6 +96,7 @@ public:
     void RefreshAll();
     void PauseAnimationsForLvgl();
     void ResumeAnimationsForEmote();
+    bool AnimationsSuspended() const { return animations_suspended_; }
 
     inline std::shared_ptr<LvglFont> text_font() const
     {
@@ -114,6 +115,9 @@ private:
     bool btr_level;
 
     std::unique_ptr<EmoteEngine> engine_;
+    // When true, SetEmotion/SetStatus must not start gfx_anim (saves internal SRAM
+    // for realtime AEC uplink + MQTT during a chat session).
+    bool animations_suspended_ = false;
 
     // Font management
     std::shared_ptr<LvglFont> text_font_ = nullptr;

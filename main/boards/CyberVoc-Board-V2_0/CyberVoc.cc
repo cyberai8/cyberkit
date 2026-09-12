@@ -222,13 +222,13 @@ void EspS3Cat::InitializeSpi()
 {
     // ESP32-S3 SPI GDMA cannot read PSRAM (access_ext_mem=false); any non-DMA
     // source forces an internal bounce of up to max_transfer_sz. Match the
-    // LVGL strip height (4 lines) so a bounce, if it ever happens, stays small.
+    // one LVGL strip (2 lines) so a bounce, if it ever happens, stays small.
     const spi_bus_config_t bus_config = TAIJIPI_ST77916_PANEL_BUS_QSPI_CONFIG(QSPI_PIN_NUM_LCD_PCLK,
                                                                               QSPI_PIN_NUM_LCD_DATA0,
                                                                               QSPI_PIN_NUM_LCD_DATA1,
                                                                               QSPI_PIN_NUM_LCD_DATA2,
                                                                               QSPI_PIN_NUM_LCD_DATA3,
-                                                                              DISPLAY_WIDTH * 4 * sizeof(uint16_t),
+                                                                              DISPLAY_WIDTH * 2 * sizeof(uint16_t),
                                                                               static_cast<esp_intr_cpu_affinity_t>(LCD_CORE)
                                                                             );
     ESP_ERROR_CHECK(spi_bus_initialize(QSPI_LCD_HOST, &bus_config, SPI_DMA_CH_AUTO));
@@ -273,7 +273,7 @@ void start_lvgl(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel
                                                          static_cast<uint16_t>(height),
                                                          ESP_LV_ADAPTER_ROTATE_0);
     display_config.profile.use_psram = false;
-    display_config.profile.buffer_height = 4;
+    display_config.profile.buffer_height = 2;
     display_config.profile.require_double_buffer = false;
 
     lv_display_t *display_ = esp_lv_adapter_register_display(&display_config);
