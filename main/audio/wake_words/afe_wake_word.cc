@@ -110,11 +110,20 @@ bool AfeWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     }
 
     if (!detection_task_created_) {
+#if CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+        const BaseType_t task_result = xTaskCreateWithCaps([](void* arg) {
+            auto* self = static_cast<AfeWakeWord*>(arg);
+            self->AudioDetectionTask();
+            vTaskDeleteWithCaps(nullptr);
+        }, "audio_detection", 4096, this, 3, nullptr,
+           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
         const BaseType_t task_result = xTaskCreate([](void* arg) {
             auto* self = static_cast<AfeWakeWord*>(arg);
             self->AudioDetectionTask();
             vTaskDelete(nullptr);
         }, "audio_detection", 4096, this, 3, nullptr);
+#endif
         if (task_result != pdPASS) {
             ESP_LOGE(TAG, "Failed to create audio detection task");
             Deinitialize();

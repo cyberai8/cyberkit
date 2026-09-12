@@ -1,5 +1,6 @@
 #include "afe_audio_processor.h"
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 
 #define PROCESSOR_RUNNING 0x01
@@ -111,11 +112,21 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms,
     }
 
     if (!task_created_) {
+#if CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+        // Prefer PSRAM for the fetch task stack; internal SRAM is scarce after WiFi.
+        const BaseType_t task_result = xTaskCreateWithCaps([](void* arg) {
+            auto* self = static_cast<AfeAudioProcessor*>(arg);
+            self->AudioProcessorTask();
+            vTaskDeleteWithCaps(nullptr);
+        }, "audio_communication", 4096, this, 3, nullptr,
+           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
         const BaseType_t task_result = xTaskCreate([](void* arg) {
             auto* self = static_cast<AfeAudioProcessor*>(arg);
             self->AudioProcessorTask();
             vTaskDelete(nullptr);
         }, "audio_communication", 4096, this, 3, nullptr);
+#endif
         if (task_result != pdPASS) {
             ESP_LOGE(TAG, "Failed to create audio communication task");
             Deinitialize();

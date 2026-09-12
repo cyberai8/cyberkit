@@ -168,7 +168,7 @@ private:
     bool TryPushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t>&& pcm);
     void SetDecodeSampleRate(int sample_rate, int frame_duration);
     void CheckAndUpdateAudioPowerState();
-    // Claim I2S DMA before AFE allocates the remaining internal SRAM.
+    // Claim I2S DMA before first AFE use; do not destroy AFEs on dialogue turns.
     void EnsureCaptureInputReady();
 };
 

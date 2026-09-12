@@ -1023,6 +1023,8 @@ void Application::SetDeviceState(DeviceState state)
                 audio_service_.EnableDeviceAec(true);
             }
             
+            // Match official xiaozhi dialogue flow: Start voice processing, then
+            // stop wake-word feeding. Both AFEs stay initialized (Start/Stop only).
             audio_service_.EnableVoiceProcessing(true);
             audio_service_.EnableWakeWordDetection(false);
         }

@@ -240,42 +240,48 @@ void AudioService::AudioInputTask() {
                 PushTaskToEncodeQueue(kAudioTaskTypeEncodeToTestingQueue, std::move(data));
                 continue;
             }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
 
         /* Feed the wake word */
         if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
             std::vector<int16_t> data;
-            int samples = wake_word_->GetFeedSize();
+            int samples = wake_word_ ? static_cast<int>(wake_word_->GetFeedSize()) : 0;
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
                     wake_word_->Feed(data);
                     continue;
                 }
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
             }
+            ESP_LOGW(TAG, "Wake word running without feed size; clearing");
+            xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+            continue;
         }
 
         /* Feed the audio processor */
         if (bits & AS_EVENT_AUDIO_PROCESSOR_RUNNING) {
             std::vector<int16_t> data;
-            int samples = audio_processor_->GetFeedSize();
+            int samples = audio_processor_ ? static_cast<int>(audio_processor_->GetFeedSize()) : 0;
             if (samples > 0) {
                 if (ReadAudioData(data, 16000, samples)) {
                     audio_processor_->Feed(std::move(data));
                     continue;
                 }
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
             }
-        }
-                // 添加：检查是否有有效的事件标志
-        if (!(bits & (AS_EVENT_AUDIO_TESTING_RUNNING | 
-                      AS_EVENT_WAKE_WORD_RUNNING | 
-                      AS_EVENT_AUDIO_PROCESSOR_RUNNING))) {
-            ESP_LOGW(TAG, "No valid events, waiting... bits: %lx", bits);
-            vTaskDelay(pdMS_TO_TICKS(100));  // 短暂延迟后继续等待
-            continue;  // 继续循环而不是break
+            // AFE init/task create failed but the running bit was still set.
+            ESP_LOGW(TAG, "Audio processor running without feed size; clearing");
+            xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+            audio_processor_initialized_ = false;
+            continue;
         }
 
-        ESP_LOGE(TAG, "Should not be here, bits: %lx", bits);
-        //break;
+        ESP_LOGW(TAG, "No capture event ready, waiting... bits: %lx", bits);
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     ESP_LOGW(TAG, "Audio input task stopped");
@@ -510,36 +516,12 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 }
 
 void AudioService::EnsureCaptureInputReady() {
-    // Duplex I2S reopens TX when only RX is enabled. That DMA must be claimed
-    // before WakeNet/AFE eats the remaining internal SRAM; otherwise
-    // esp_codec_dev's set_drv_fs null-derefs on allocate failure.
+    // Keep I2S DMA claimed before any AFE work. Do not tear down WakeNet /
+    // voice AFEs here — official xiaozhi only Start/Stop across dialogue turns.
     last_input_time_ = std::chrono::steady_clock::now();
     if (codec_ == nullptr || codec_->input_enabled()) {
         return;
     }
-
-    // If AFE already holds internal SRAM, free it before reclaiming I2S DMA
-    // (e.g. power-save closed the codec while WakeNet stayed initialized).
-#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
-    if (wake_word_initialized_) {
-        if (auto* afe_wake_word = dynamic_cast<AfeWakeWord*>(wake_word_.get())) {
-            if (afe_wake_word->Deinitialize()) {
-                wake_word_initialized_ = false;
-                ESP_LOGW(TAG, "Released WakeNet AFE to reclaim I2S DMA");
-            }
-        }
-    }
-#endif
-#if CONFIG_USE_AUDIO_PROCESSOR
-    if (audio_processor_initialized_) {
-        if (auto* afe_processor = dynamic_cast<AfeAudioProcessor*>(audio_processor_.get())) {
-            if (afe_processor->Deinitialize()) {
-                audio_processor_initialized_ = false;
-                ESP_LOGW(TAG, "Released audio-processor AFE to reclaim I2S DMA");
-            }
-        }
-    }
-#endif
 
     esp_timer_stop(audio_power_timer_);
     esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -561,6 +543,11 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             }
             wake_word_initialized_ = true;
         }
+        if (wake_word_->GetFeedSize() == 0) {
+            ESP_LOGE(TAG, "Wake word initialized without a usable feed size");
+            wake_word_initialized_ = false;
+            return;
+        }
         wake_word_->Start();
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
     } else {
@@ -575,6 +562,11 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         EnsureCaptureInputReady();
         if (!audio_processor_initialized_) {
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
+            if (audio_processor_->GetFeedSize() == 0) {
+                ESP_LOGE(TAG, "Failed to initialize voice processing AFE");
+                audio_processor_initialized_ = false;
+                return;
+            }
             audio_processor_initialized_ = true;
         }
 
