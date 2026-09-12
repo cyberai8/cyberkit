@@ -589,6 +589,10 @@ void Application::Start()
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR); });
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet)
                                {
+        // After local barge-in abort, drop remaining TTS so uplink stays usable.
+        if (aborted_) {
+            return;
+        }
         if (device_state_ == kDeviceStateSpeaking) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         } });
@@ -786,6 +790,18 @@ void Application::MainEventLoop()
             {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+            } else if (device_state_ == kDeviceStateSpeaking &&
+                       listening_mode_ == kListeningModeRealtime &&
+                       !aborted_ &&
+                       audio_service_.IsVoiceDetected()) {
+                // Ignore early VAD — TTS echo often trips AEC for a few hundred ms.
+                constexpr int64_t kBargeInGraceUs = 500000;
+                if (esp_timer_get_time() - speaking_entered_us_ >= kBargeInGraceUs) {
+                    // Device-side barge-in: stop TTS immediately and keep uplink so
+                    // the server can STT the utterance that interrupted playback.
+                    ESP_LOGI(TAG, "Realtime barge-in: local VAD during speaking");
+                    AbortSpeaking(kAbortReasonNone);
+                }
             }
         }
 
@@ -917,6 +933,8 @@ void Application::AbortSpeaking(AbortReason reason)
 {
     ESP_LOGI(TAG, "Abort speaking");
     aborted_ = true;
+    // Clear queued TTS so speaker stops now; mic uplink must keep running.
+    audio_service_.ResetDecoder();
     if (protocol_)
     {
         protocol_->SendAbortSpeaking(reason);
@@ -1008,17 +1026,28 @@ void Application::SetDeviceState(DeviceState state)
         break;
     case kDeviceStateListening:
     {
-        // Suspend emote for the whole chat session so realtime barge-in keeps
-        // internal SRAM for AEC uplink + MQTT (avoid SetEyes palette alloc).
+        // Suspend heavy eye/dialog anims before AFE so init keeps internal SRAM.
+        // SetStatus(LISTENING) must run AFTER EnableVoiceProcessing — that path
+        // PauseAnimations again and would otherwise stop the center listen icon.
         if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
             emote->PauseAnimationsForLvgl();
         }
-        display->SetStatus(Lang::Strings::LISTENING);
 
-        // Publish listen-start while MQTT/TLS still has headroom. Creating the
-        // AEC AFE right before this publish starves socket/TLS buffers (errno=12).
-        if (protocol_) {
-            protocol_->SendStartListening(listening_mode_);
+        // Realtime: after TTS, do NOT re-send listen/start — that resets server
+        // ASR and drops the barge-in utterance captured while speaking.
+        const bool realtime_continue_after_tts =
+            listening_mode_ == kListeningModeRealtime &&
+            previous_state == kDeviceStateSpeaking &&
+            audio_service_.IsAudioProcessorRunning();
+
+        if (!realtime_continue_after_tts) {
+            // Publish listen-start while MQTT/TLS still has headroom. Creating the
+            // AEC AFE right before this publish starves socket/TLS buffers (errno=12).
+            if (protocol_) {
+                protocol_->SendStartListening(listening_mode_);
+            }
+        } else {
+            ESP_LOGI(TAG, "Realtime continue after TTS: keep listen session (no listen/start)");
         }
 
         // Make sure the audio processor is running
@@ -1032,9 +1061,12 @@ void Application::SetDeviceState(DeviceState state)
             audio_service_.EnableVoiceProcessing(true);
             audio_service_.EnableWakeWordDetection(false);
         }
+
+        display->SetStatus(Lang::Strings::LISTENING);
         break;
     }
     case kDeviceStateSpeaking:
+        speaking_entered_us_ = esp_timer_get_time();
         display->SetStatus(Lang::Strings::SPEAKING);
         if (auto* emote = dynamic_cast<emote::EmoteDisplay*>(display)) {
             emote->PauseAnimationsForLvgl();

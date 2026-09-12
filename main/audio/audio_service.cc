@@ -338,6 +338,43 @@ void AudioService::OpusCodecTask() {
             break;
         }
 
+        /* Prefer uplink encode during duplex TTS — otherwise decode starves
+         * mic frames and barge-in speech never reaches the server. */
+        if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
+            auto task = std::move(audio_encode_queue_.front());
+            audio_encode_queue_.pop_front();
+            audio_queue_cv_.notify_all();
+            lock.unlock();
+
+            auto packet = std::make_unique<AudioStreamPacket>();
+            packet->frame_duration = OPUS_FRAME_DURATION_MS;
+            packet->sample_rate = 16000;
+            packet->timestamp = task->timestamp;
+            if (!opus_encoder_->Encode(std::move(task->pcm), packet->payload)) {
+                ESP_LOGE(TAG, "Failed to encode audio");
+                lock.lock();
+                continue;
+            }
+
+            if (task->type == kAudioTaskTypeEncodeToSendQueue) {
+                {
+                    std::lock_guard<std::mutex> send_lock(audio_queue_mutex_);
+                    if (audio_send_queue_.size() >= MAX_SEND_PACKETS_IN_QUEUE) {
+                        audio_send_queue_.pop_front();
+                    }
+                    audio_send_queue_.push_back(std::move(packet));
+                }
+                if (callbacks_.on_send_queue_available) {
+                    callbacks_.on_send_queue_available();
+                }
+            } else if (task->type == kAudioTaskTypeEncodeToTestingQueue) {
+                std::lock_guard<std::mutex> test_lock(audio_queue_mutex_);
+                audio_testing_queue_.push_back(std::move(packet));
+            }
+            debug_statistics_.encode_count++;
+            lock.lock();
+        }
+
         /* Decode the audio from decode queue */
         if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
@@ -367,38 +404,6 @@ void AudioService::OpusCodecTask() {
                 lock.lock();
             }
             debug_statistics_.decode_count++;
-        }
-        
-        /* Encode the audio to send queue */
-        if (!audio_encode_queue_.empty() && audio_send_queue_.size() < MAX_SEND_PACKETS_IN_QUEUE) {
-            auto task = std::move(audio_encode_queue_.front());
-            audio_encode_queue_.pop_front();
-            audio_queue_cv_.notify_all();
-            lock.unlock();
-
-            auto packet = std::make_unique<AudioStreamPacket>();
-            packet->frame_duration = OPUS_FRAME_DURATION_MS;
-            packet->sample_rate = 16000;
-            packet->timestamp = task->timestamp;
-            if (!opus_encoder_->Encode(std::move(task->pcm), packet->payload)) {
-                ESP_LOGE(TAG, "Failed to encode audio");
-                continue;
-            }
-
-            if (task->type == kAudioTaskTypeEncodeToSendQueue) {
-                {
-                    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-                    audio_send_queue_.push_back(std::move(packet));
-                }
-                if (callbacks_.on_send_queue_available) {
-                    callbacks_.on_send_queue_available();
-                }
-            } else if (task->type == kAudioTaskTypeEncodeToTestingQueue) {
-                std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-                audio_testing_queue_.push_back(std::move(packet));
-            }
-            debug_statistics_.encode_count++;
-            lock.lock();
         }
     }
 
@@ -461,13 +466,20 @@ bool AudioService::TryPushTaskToEncodeQueue(AudioTaskType type, std::vector<int1
             timestamp_queue_.pop_front();
         }
 #endif
+        // Prefer newest mic frames for barge-in; drop oldest if send path lags.
         if (audio_send_queue_.size() >= MAX_SEND_PACKETS_IN_QUEUE) {
-            return false;
+            audio_send_queue_.pop_front();
         }
     }
 
     if (audio_encode_queue_.size() >= MAX_ENCODE_TASKS_IN_QUEUE) {
-        return false;
+        audio_encode_queue_.pop_front();
+        static int drop_log_count = 0;
+        if ((++drop_log_count % 50) == 1) {
+            ESP_LOGW(TAG, "Encode queue full, drop oldest PCM (encode=%u send=%u)",
+                     (unsigned)audio_encode_queue_.size(),
+                     (unsigned)audio_send_queue_.size());
+        }
     }
 
     audio_encode_queue_.push_back(std::move(task));
@@ -621,9 +633,7 @@ void AudioService::EnableVoiceProcessing(bool enable) {
                 emote->PauseAnimationsForLvgl();
             }
             audio_processor_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_);
-            if (emote) {
-                emote->ResumeAnimationsForEmote();
-            }
+            // Keep emote paused for the chat session; idle resumes when SRAM allows.
             if (audio_processor_->GetFeedSize() == 0) {
                 ESP_LOGE(TAG, "Failed to initialize voice processing AFE");
                 audio_processor_initialized_ = false;

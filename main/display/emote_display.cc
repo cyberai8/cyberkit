@@ -1391,13 +1391,11 @@ namespace emote
         DisplayLockGuard lock(this);
         animations_suspended_ = true;
         ESP_LOGI(TAG, "Pause emote animations (SRAM guard)");
+        // Keep listen indicator running — it is the listening UI. Only stop
+        // eye/dialog anims that allocate palettes and fight AFE init.
         if (g_obj_anim_eye)
         {
             gfx_anim_stop(g_obj_anim_eye);
-        }
-        if (g_obj_anim_listen)
-        {
-            gfx_anim_stop(g_obj_anim_listen);
         }
         if (g_obj_anim_emerg_dlg)
         {

@@ -90,6 +90,7 @@ private:
 
     bool has_server_time_ = false;
     bool aborted_ = false;
+    int64_t speaking_entered_us_ = 0;
     int clock_ticks_ = 0;
     int emo_num = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
